@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 570" font-family="Segoe UI, Arial, sans-serif">
+  <!-- Title -->
+  <text x="250" y="26" text-anchor="middle" font-size="18" font-weight="700" fill="#212529">SSVEP electrode montage (top view, nose up)</text>
+  <text x="250" y="46" text-anchor="middle" font-size="12" fill="#868e96">Highlighted = occipital / parieto-occipital sites used for SSVEP</text>
+
+  <!-- Nose -->
+  <polygon points="228,78 250,48 272,78" fill="#fafafa" stroke="#343a40" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Ears -->
+  <path d="M40,255 q-22,15 0,55" fill="#fafafa" stroke="#343a40" stroke-width="3"/>
+  <path d="M460,255 q22,15 0,55" fill="#fafafa" stroke="#343a40" stroke-width="3"/>
+  <!-- Head -->
+  <circle cx="250" cy="285" r="215" fill="#fafafa" stroke="#343a40" stroke-width="3"/>
+
+  <!-- ================= Non-highlighted electrodes ================= -->
+  <g font-size="11" font-weight="600" text-anchor="middle">
+    <g fill="#e9ecef" stroke="#adb5bd" stroke-width="1.5">
+      <circle cx="205" cy="127" r="19"/><circle cx="250" cy="120" r="19"/><circle cx="295" cy="127" r="19"/>
+      <circle cx="108" cy="195" r="19"/><circle cx="183" cy="187" r="19"/><circle cx="250" cy="183" r="19"/><circle cx="317" cy="187" r="19"/><circle cx="392" cy="195" r="19"/>
+      <circle cx="68"  cy="287" r="19"/><circle cx="159" cy="285" r="19"/><circle cx="250" cy="285" r="19"/><circle cx="341" cy="285" r="19"/><circle cx="432" cy="287" r="19"/>
+      <circle cx="120" cy="383" r="19"/><circle cx="190" cy="377" r="19"/><circle cx="250" cy="375" r="19"/><circle cx="310" cy="377" r="19"/><circle cx="380" cy="383" r="19"/>
+      <circle cx="250" cy="495" r="16"/>
+    </g>
+    <g fill="#495057">
+      <text x="205" y="131">Fp1</text><text x="250" y="124">Fpz</text><text x="295" y="131">Fp2</text>
+      <text x="108" y="199">F7</text><text x="183" y="191">F3</text><text x="250" y="187">Fz</text><text x="317" y="191">F4</text><text x="392" y="199">F8</text>
+      <text x="68"  y="291">T7</text><text x="159" y="289">C3</text><text x="250" y="289">Cz</text><text x="341" y="289">C4</text><text x="432" y="291">T8</text>
+      <text x="120" y="387">P7</text><text x="190" y="381">P3</text><text x="250" y="379">Pz</text><text x="310" y="381">P4</text><text x="380" y="387">P8</text>
+      <text x="250" y="499" font-size="10">Iz</text>
+    </g>
+  </g>
+
+  <!-- ================= Highlighted SSVEP electrodes ================= -->
+  <g font-size="11.5" font-weight="700" text-anchor="middle">
+    <g fill="#fd7e14" stroke="#d9480f" stroke-width="2">
+      <!-- PO row -->
+      <circle cx="150" cy="421" r="20"/><circle cx="206" cy="425" r="20"/><circle cx="250" cy="427" r="20"/><circle cx="294" cy="425" r="20"/><circle cx="350" cy="421" r="20"/>
+      <!-- O row -->
+      <circle cx="208" cy="463" r="20"/><circle cx="250" cy="467" r="20"/><circle cx="292" cy="463" r="20"/>
+    </g>
+    <g fill="#ffffff">
+      <text x="150" y="425">PO7</text><text x="206" y="429">PO3</text><text x="250" y="431">POz</text><text x="294" y="429">PO4</text><text x="350" y="425">PO8</text>
+      <text x="208" y="467">O1</text><text x="250" y="471">Oz</text><text x="292" y="467">O2</text>
+    </g>
+  </g>
+
+  <!-- Left / Right labels -->
+  <text x="30" y="180" font-size="12" fill="#868e96" font-weight="700">LEFT</text>
+  <text x="470" y="180" font-size="12" fill="#868e96" font-weight="700" text-anchor="end">RIGHT</text>
+
+  <!-- Legend -->
+  <g font-size="12" fill="#495057">
+    <circle cx="150" cy="545" r="10" fill="#fd7e14" stroke="#d9480f" stroke-width="2"/>
+    <text x="168" y="549" text-anchor="start">SSVEP channel (1-8)</text>
+    <circle cx="330" cy="545" r="10" fill="#e9ecef" stroke="#adb5bd" stroke-width="1.5"/>
+    <text x="348" y="549" text-anchor="start">Reference layout</text>
+  </g>
+</svg>

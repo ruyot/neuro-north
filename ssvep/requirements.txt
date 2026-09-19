@@ -1,0 +1,18 @@
+# EEG hardware + signal processing
+brainflow>=5.22.2
+numpy>=2.5.0
+pandas>=3.0.3
+scikit-learn>=1.9.0
+scipy>=1.18.0
+
+# TRCA classifier
+meegkit>=0.1.9
+
+# Stimulus presentation + keyboard emulation (real-time control)
+# NOTE: psychopy has no wheels for Python 3.13+. Use a 3.11 or 3.12 venv.
+psychopy>=2023.1.3
+
+# Keyboard emulation: pydirectinput on Windows (works in DirectX games),
+# pyautogui everywhere else. Same press()/FAILSAFE API.
+pydirectinput>=1.0.4; sys_platform == "win32"
+pyautogui>=0.9.54; sys_platform != "win32"
