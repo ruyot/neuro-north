@@ -15,11 +15,11 @@ from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 from brainflow.data_filter import DataFilter, DetrendOperations, FilterTypes
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from stream_test import ACCEL_ROWS, CHANNEL_NAMES, GYRO_ROWS, enable_channels
+from ssvep.board import ACCEL_ROWS, GYRO_ROWS, enable_channels
+from ssvep.config import ELECTRODE_LABELS as CHANNEL_NAMES
 
 WINDOW_SECONDS = 5
 REFRESH_MS = 50
-# Warm = right hemisphere (ch 1-4), cool = left hemisphere (ch 5-8)
 COLORS = ["#ff7043", "#e53935", "#ffb300", "#f06292", "#4fc3f7", "#26a69a", "#1e88e5", "#7e57c2"]
 XYZ_COLORS = ["#e6194b", "#3cb44b", "#4363d8"]
 

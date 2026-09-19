@@ -6,44 +6,42 @@ Status key: ✅ done · 🚧 in progress · ⬜ not started
 
 ## Phase 0 — Board connection ✅
 
-- ✅ BrainFlow installed in `.venv` (Python 3.9), deps in `requirements.txt`
+- ✅ BrainFlow set up; `.venv` on Python 3.12, deps in `requirements.txt`
 - ✅ `stream_test.py` — connects to Knight IMU, enables channels, prints EEG + accel/gyro (`--synthetic` for no hardware)
 - ✅ `live_plot.py` — live pyqtgraph view: 8 EEG traces (1–40 Hz bandpass + 60 Hz notch, `F` toggles raw) + accel/gyro
 - ✅ Verified on hardware: 125 Hz stream, all 8 channels enable, IMU reads gravity correctly
-- ✅ Channel labels for the NeuroPawn motor-imagery montage
 
-## Phase 1 — Prove the SSVEP signal exists ⬜
+## Phase 1 — SSVEP pipeline (A/B/C/D typer) 🚧
 
-Goal: a clear spectral peak at the stimulus frequency (and harmonics) over occipital electrodes.
+Based on NeuroPawn's SSVEP + TRCA pipeline, adapted for the Knight IMU on macOS.
 
-- ⬜ Move electrodes to occipital montage; update `CHANNEL_NAMES`
-- ⬜ Single-target flicker script (sampled sinusoidal, vsync'd), fixed frequency, ~10 s
-- ⬜ Record EEG during flicker vs. rest; save to CSV
-- ⬜ Plot PSD — confirm peak at *f*, 2*f*, 3*f* vs. rest
-- ⬜ Check display: actual refresh rate, dropped frames
+- ✅ `ssvep/` package: config, board, preprocessing, stimulus (PsychoPy), recording process, TRCA model
+- ✅ PsychoPy verified frame-locked at 60.0 Hz on the MacBook Air display (pygame rejected: no vsync on macOS)
+- ✅ `collect_training_data.py` — cued calibration blocks → `training_data/session_*/`
+- ✅ `evaluate_trca.py` — leave-one-block-out accuracy + ITR
+- ✅ `abcd_typer.py` — free typing + `--copy` test with accuracy / letters-per-min / ITR saved to `results/`
+- ✅ Tested without hardware: TRCA on simulated SSVEP (100% clear / 62% weak), recording process collect/predict/failure paths on synthetic board
+- ⬜ Electrodes moved to occipital montage (Oz, O1, O2, PO7, PO8, PO3, PO4, POz)
+- ⬜ Visual check of the flicker window (`--synthetic --windowed`)
+- ⬜ First real calibration session (6 blocks) + evaluate
+- ⬜ First copy test on the real headset
 
-## Phase 2 — Offline FBCCA ⬜
+## Phase 2 — Tune the A/B/C/D typer ⬜
 
-- ⬜ Data collection script: 4 targets, cued trials (~5 per target), labeled + saved
-- ⬜ FBCCA implementation (filter bank capped ~50 Hz, 3 harmonics, weights n^-1.25 + 0.25)
-- ⬜ Accuracy vs. window length: 4 / 3 / 2 / 1 / 0.5 s
-- ⬜ Pick the 4 best-separated frequencies
-
-## Phase 3 — Real-time selection ⬜
-
-- ⬜ 4-target flicker UI
-- ⬜ Live FBCCA on a sliding window
-- ⬜ Confidence threshold (margin over runner-up)
+- ⬜ Accuracy vs. flicker length (1.5 / 1.0 / 0.5 s)
+- ⬜ Check 10 Hz vs. alpha confusion; try alternative frequencies if needed
+- ⬜ Confidence threshold (reject low-score predictions)
 - ⬜ IMU motion gate — reject predictions during head movement
-- ⬜ Measure live accuracy and selections/minute
+- ⬜ Does a model from one day work the next day?
 
-## Phase 4 — Hierarchical speller ⬜
+## Phase 3 — Hierarchical speller ⬜
 
-- ⬜ Group → subgroup → character navigation
+- ⬜ Input-agnostic speller core (keyboard input for testing)
+- ⬜ Group → subgroup → character navigation with 4 targets
 - ⬜ Space, backspace, back/undo
 - ⬜ Expand from 4 to 8 targets if accuracy holds
 
-## Phase 5 — Word & sentence prediction ⬜
+## Phase 4 — Word & sentence prediction ⬜
 
 - ⬜ Word-suggestion mode (local dictionary first)
 - ⬜ LLM completion (Claude API) for words/sentences
@@ -51,17 +49,23 @@ Goal: a clear spectral peak at the stimulus frequency (and harmonics) over occip
 
 ## Later / stretch
 
-- ⬜ FBCCA + KNN or TRCA (per-user trained)
+- ⬜ FBCCA zero-calibration fallback
 - ⬜ Clench as confirm/undo signal
-- ⬜ Split into streamer / DSP / GUI processes if needed
+- ⬜ Arduino + photoresistor check of the real flicker frequencies (NeuroPawn's freq-checker)
 
 ## Log
 
 Newest first. Record findings, numbers, and gotchas here.
+
+### 2026-09-19 (later)
+- Switched base design to NeuroPawn's SSVEP + TRCA pipeline (built for the Knight board): 4 corner targets at 6.67 / 8.57 / 10 / 12 Hz, 1.5 s flicker, occipital montage. WATOLINK kept for later speller ideas only.
+- Moved to Python 3.12 (NeuroPawn's deps need numpy ≥ 2.x, pandas 3).
+- pygame vsync doesn't work on macOS (measured 122 Hz – 10 kHz). PsychoPy flips at a steady 60.0 Hz (16.4–17.0 ms) → using PsychoPy.
+- NeuroPawn code needed: board 57 → 66, longer channel-setup pauses, no Windows-only `pydirectinput`, ready/failed handshake instead of a fixed 30 s wait.
 
 ### 2026-09-19
 - Created branch `abish_test`; set up BrainFlow; Knight IMU = board 66, 8 EEG @ 125 Hz, IMU in rows 11–19.
 - EEG read all zeros at first — channels are off by default; fixed with `chon_{ch}_12` + `rldadd_{ch}` sent **after** `start_stream()` with NeuroPawn's 1–2 s pauses. Sending before streaming causes UTF-8 decode errors (board streams binary nonstop).
 - Hit corrupted frames / ~1–13 samples/s — cause was two processes reading the port at once. Only run one BrainFlow session at a time.
 - Board once dropped off USB mid-setup; didn't recur.
-- Decided on SSVEP + FBCCA + hierarchical keyboard (see APPROACH.md), inspired by WATOLINK's mind-speech-interface.
+- Decided on SSVEP (see APPROACH.md) after comparing with motor imagery.

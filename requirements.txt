@@ -1,6 +1,10 @@
-brainflow==5.23.0
-numpy==2.0.2
-PyQt6==6.10.2
-PyQt6-Qt6==6.10.2
-PyQt6_sip==13.10.2
-pyqtgraph==0.13.7
+# Python 3.12 (brew install python@3.12; python3.12 -m venv .venv)
+brainflow>=5.23
+numpy>=2.3
+scipy>=1.18
+pandas>=3.0
+scikit-learn>=1.9
+meegkit>=0.2        # TRCA classifier
+psychopy>=2026.2    # frame-locked flicker stimulus
+pyqtgraph>=0.14     # live_plot.py
+PyQt6>=6.10

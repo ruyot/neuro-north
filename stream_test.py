@@ -16,30 +16,8 @@ import time
 
 from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 
-# Electrode wired to EEG channels 1-8, per NeuroPawn's motor-imagery montage
-# (https://docs.neuropawn.tech/tutorials/motor-imagery/).
-# Channels 1-4 = right hemisphere (left-hand activity), 5-8 = left hemisphere (right-hand activity).
-CHANNEL_NAMES = ["FC4", "C4", "CP4", "C2", "C1", "CP3", "C3", "FC3"]
-
-ACCEL_ROWS = [11, 12, 13]
-GYRO_ROWS = [14, 15, 16]
-MAG_ROWS = [17, 18, 19]
-
-
-def enable_channels(board, channels, gain=12):
-    """Knight channels are off by default and must be enabled after start_stream().
-
-    The firmware drops commands sent too close together, so these delays follow
-    NeuroPawn's documented startup sequence.
-    """
-    time.sleep(2)
-    for ch in channels:
-        time.sleep(1)
-        board.config_board(f"chon_{ch}_{gain}")
-        time.sleep(2)
-        board.config_board(f"rldadd_{ch}")
-        time.sleep(1)
-        print(f"  enabled channel {ch}")
+from ssvep.board import ACCEL_ROWS, GYRO_ROWS, enable_channels
+from ssvep.config import ELECTRODE_LABELS as CHANNEL_NAMES
 
 
 def fmt(values, width=7, prec=2):
