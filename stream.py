@@ -15,11 +15,16 @@ from dotenv import load_dotenv
 load_dotenv()                     # reads .env from the project directory
 PORT = os.getenv("PORT_PATH")     # e.g. /dev/cu.usbserial-XXXX
 
-# BrainFlow 5.23 does not tag this board's IMU rows, so we take them from
-# NeuroPawn's docs. Row numbers are indices into the data array below.
+# BrainFlow 5.23 does not tag this board's IMU rows, so we take them from the
+# driver source (knight_imu.cpp): other_channels[0..1] are lead-off, then
+# other_channels[2+i] for i=0..8 is ax,ay,az,gx,gy,gz,mx,my,mz. Row numbers are
+# indices into the data array below, and they are the Knight's (board id 66)
+# ONLY - every other board id lays its IMU out somewhere else, so resolve those
+# from BoardShim instead of reaching for these.
 LOFF_P, LOFF_N = 9, 10    # lead-off status bitmasks, one bit per channel
 ACCEL = [11, 12, 13]
 GYRO = [14, 15, 16]
+MAG = [17, 18, 19]
 
 # Electrode montage, board channel 1-8 in order. Occipital / parieto-occipital
 # for SSVEP: the visual cortex sits at the back of the head, so this is where a
@@ -248,6 +253,12 @@ def main():
         board.start_stream()      # 4. flushes serial, then samples flow into a ring buffer
         empty = 0
         roll = None               # rolling window, needed for any useful fft
+        # the speller's own detector, so this line tests the thing that will type
+        gestures = None
+        if args.real:
+            from ssvep_training.head import Gestures
+
+            gestures = Gestures(rate)
 
         # 5. Drain the buffer twice a second and print the newest sample.
         end = time.time() + args.seconds
@@ -282,8 +293,16 @@ def main():
                 line += "  " + cca_decode(shown, rate, targets)
             if args.real:
                 acc = " ".join(f"{newest[r]:6.2f}" for r in ACCEL)
+                # Peak over the window, not the newest sample: a ~0.3s swipe
+                # falls between twice-a-second snapshots. Median-subtracted
+                # because a gyro axis sits at a bias that would dwarf it.
+                gyr = " ".join(f"{np.abs(data[r, :] - np.median(data[r, :])).max():9.2f}" for r in GYRO)
                 line += f" | loff P{leadoff(newest[LOFF_P])} N{leadoff(newest[LOFF_N])}"
                 line += f" | accel: {acc}"
+                line += f" | gyro pk: {gyr}"
+                fired = gestures.feed(data[GYRO])
+                if fired:                     # what the speller would have typed
+                    line += f"   <<< GESTURE: {fired}"
             print(line)
     finally:
         # 6. Always release, or the serial port stays locked. stop_stream can

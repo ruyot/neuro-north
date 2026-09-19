@@ -2,8 +2,10 @@
 The speller screen: two flicker boxes, four edge zones, and the typed text.
 
 Looking at a box (SSVEP) types its whole range as ONE item, shown as [a-f]
-until a real word replaces it. The edges are for the IMU. Every action is a
-plain method, so the IMU layer only has to call it:
+until a real word replaces it. The edges are driven by head movement (gyro):
+swipe left = next wheel page, right = space, up / down = take the top /
+bottom suggestion. Every action is a plain method, so the head layer and the
+arrow keys both just call it:
 
     ui.select_box(i)            SSVEP pick: 0 = left box, 1 = right box
     ui.next_wheel()             left edge: a-f / g-l  <->  m-r / s-z
@@ -333,6 +335,18 @@ def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
             getattr(ui, name)(*args)
     return True
 
+
+def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
+    """Apply the newest head gesture, if any. Returns the new seen count."""
+    from .head import GESTURES
+    count = recorder.gesture_count.value
+    if count != seen:
+        # Only the latest one: nobody swipes faster than the screen redraws, so a
+        # backlog means stale detections. Replaying them would spray actions.
+        name, *args = KEY_ACTIONS[GESTURES[recorder.gesture.value]]
+        getattr(ui, name)(*args)
+    return count
+
 def run_keys(win, ui: SpellerUI, squares) -> None:
     """No board, no flicker: boxes shown dim grey, 1 / 2 pick."""
     for sq in squares:
@@ -358,6 +372,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
 
     clock = core.Clock()
     state, t_mark, t_req, t_fb, seen, actions_at_mark = "mark", 0.0, 0.0, 0.0, 0, 0
+    # not 0: anything detected while the board warmed up must not fire on open
+    seen_gesture = recorder.gesture_count.value
     phase0 = 0.0                # flicker time origin, re-anchored at each marker (see typer.py)
     marking = False
     dropped_at_mark = 0
@@ -390,6 +406,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
 
             if not handle_keys(ui, boxes=False):
                 return
+            # before the state checks below, so a swipe drops the selection it interrupted
+            seen_gesture = handle_gestures(ui, recorder, seen_gesture)
 
             if state == "collecting":
                 if ui.action_count != actions_at_mark:

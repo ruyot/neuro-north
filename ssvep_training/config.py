@@ -49,3 +49,11 @@ USE_ENSEMBLE_TRCA = True
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+
+# Head gestures (head.py). The gyro is 16-bit with no documented range, so an
+# absolute threshold is unpickable; this is a multiple of the sensor's own
+# resting jitter instead. Below ~4 is twitchy, above ~8 wants a deliberate
+# swipe. Check it with `python stream.py --real`: a swipe's `gyro pk` should
+# clear the peaks between swipes by more than this factor.
+GESTURE_THRESHOLD = 6.0   # multiples of resting gyro noise, not a physical unit
+GESTURE_COOLDOWN = 0.6    # s, so one swipe cannot fire on every sample it spans

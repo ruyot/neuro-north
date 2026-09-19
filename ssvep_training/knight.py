@@ -22,3 +22,5 @@ PORT = stream.PORT
 LOFF_P = stream.LOFF_P
 LOFF_N = stream.LOFF_N
 ACCEL = stream.ACCEL
+GYRO = stream.GYRO
+MAG = stream.MAG

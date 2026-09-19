@@ -42,6 +42,8 @@ class RecordingProcess(Process):
         self.predict_count = Value("i", 0)
         self.last_prediction = Value("i", -1)
         self.prediction_count = Value("i", 0)
+        self.gesture = Value("i", -1)          # index into head.GESTURES
+        self.gesture_count = Value("i", 0)     # bumped once per detected head movement
         self._running = Event()
         self._running.set()
 
@@ -95,12 +97,32 @@ class RecordingProcess(Process):
 
         recorded = 0
 
+        # gestures ride along on chunks the recorder already drains; a broken
+        # detector must never cost us the recording
+        try:
+            from .head import GESTURES, Gestures, gyro_rows
+            gestures, gyro = Gestures(board.rate), gyro_rows(board.board_id)
+        except Exception:
+            traceback.print_exc()
+            gestures = None
+
         def drain():
-            nonlocal recorded
+            nonlocal recorded, gestures
             chunk = board.shim.get_board_data()
             if chunk.shape[1]:
                 chunks.append(chunk)
                 recorded += chunk.shape[1]
+                if gestures is not None:
+                    try:
+                        name = gestures.feed(chunk[gyro])
+                        if name is not None:
+                            print(f"[head] {name}")
+                            self.gesture.value = GESTURES.index(name)
+                            with self.gesture_count.get_lock():
+                                self.gesture_count.value += 1
+                    except Exception:
+                        traceback.print_exc()
+                        gestures = None          # one bad read disables gestures, not the board
 
         def save():
             if self.session_dir and chunks:
