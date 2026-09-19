@@ -15,11 +15,12 @@ from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 from brainflow.data_filter import DataFilter, DetrendOperations, FilterTypes
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from stream_test import ACCEL_ROWS, GYRO_ROWS, enable_channels
+from stream_test import ACCEL_ROWS, CHANNEL_NAMES, GYRO_ROWS, enable_channels
 
 WINDOW_SECONDS = 5
 REFRESH_MS = 50
-COLORS = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#bfef45"]
+# Warm = right hemisphere (ch 1-4), cool = left hemisphere (ch 5-8)
+COLORS = ["#ff7043", "#e53935", "#ffb300", "#f06292", "#4fc3f7", "#26a69a", "#1e88e5", "#7e57c2"]
 XYZ_COLORS = ["#e6194b", "#3cb44b", "#4363d8"]
 
 
@@ -45,7 +46,7 @@ class LivePlot:
         self.eeg_curves, self.eeg_plots = [], []
         for i, ch in enumerate(self.eeg_channels):
             p = self.win.addPlot(row=i + 1, col=0)
-            p.setLabel("left", f"EEG {i + 1} (uV)")  # no units= so pyqtgraph doesn't rescale to kuV/nuV
+            p.setLabel("left", f"{i + 1}: {CHANNEL_NAMES[i]} (uV)")  # no units= so pyqtgraph doesn't rescale to kuV/nuV
             p.showGrid(x=True, y=True, alpha=0.2)
             p.setMouseEnabled(x=False, y=True)
             if i < len(self.eeg_channels) - 1:

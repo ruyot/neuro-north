@@ -16,6 +16,11 @@ import time
 
 from brainflow.board_shim import BoardIds, BoardShim, BrainFlowInputParams
 
+# Electrode wired to EEG channels 1-8, per NeuroPawn's motor-imagery montage
+# (https://docs.neuropawn.tech/tutorials/motor-imagery/).
+# Channels 1-4 = right hemisphere (left-hand activity), 5-8 = left hemisphere (right-hand activity).
+CHANNEL_NAMES = ["FC4", "C4", "CP4", "C2", "C1", "CP3", "C3", "FC3"]
+
 ACCEL_ROWS = [11, 12, 13]
 GYRO_ROWS = [14, 15, 16]
 MAG_ROWS = [17, 18, 19]
@@ -81,7 +86,8 @@ def main():
                 print("no samples yet...")
                 continue
             latest = data[:, -1]
-            line = f"[{data.shape[1]:3d}] EEG: {fmt(latest[eeg_channels], 9, 1)}"
+            line = f"[{data.shape[1]:3d}] " + " ".join(
+                f"{name}:{latest[ch]:9.1f}" for name, ch in zip(CHANNEL_NAMES, eeg_channels))
             if not args.synthetic:
                 line += (f" | acc: {fmt(latest[ACCEL_ROWS])}"
                          f" | gyro: {fmt(latest[GYRO_ROWS])}")
