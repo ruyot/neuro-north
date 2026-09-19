@@ -1,0 +1,5 @@
+# EEG recordings and results stay local
+training_data/
+training_data_synthetic/
+results/
+__pycache__/

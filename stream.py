@@ -164,6 +164,7 @@ def describe_spectrum(win, rate):
     usable = freqs >= 0.5
     mains = (freqs >= 55) & (freqs < 65)
     alpha = (freqs >= 8) & (freqs < 12)
+    drift = (freqs >= 0.5) & (freqs < 2)
 
     # Per channel, not averaged: a channel with bad contact should show a much
     # bigger mains share than its neighbours. That is the impedance test.
@@ -171,12 +172,14 @@ def describe_spectrum(win, rate):
     tot[tot == 0] = 1e-12
     mains_ch = 100 * power[:, mains].sum(axis=1) / tot
     alpha_ch = 100 * power[:, alpha].sum(axis=1) / tot
+    drift_ch = 100 * power[:, drift].sum(axis=1) / tot
 
     # Normalise each channel before averaging, otherwise one drifting
     # electrode at 200k rms decides the "dominant" frequency for all of them.
     norm = power[:, usable] / tot[:, None]
     dom = freqs[usable][np.argmax(norm.mean(axis=0))]
     return ("mains%: " + " ".join(f"{v:3.0f}" for v in mains_ch)
+            + " | drift%: " + " ".join(f"{v:3.0f}" for v in drift_ch)
             + " | alpha%: " + " ".join(f"{v:3.0f}" for v in alpha_ch)
             + f" | dom {dom:5.1f}Hz")
 
