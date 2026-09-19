@@ -1,0 +1,8 @@
+# On top of ssvep_training/requirements.txt (board, psychopy, numpy).
+# meegkit/TRCA is not needed here; pyriemann replaces the tutorial's hand-rolled
+# covariance, Riemannian mean and tangent map, and supplies the multi-class CSP,
+# so mne is not a dependency either.
+pyriemann>=0.8
+scikit-learn>=1.5
+scipy>=1.13
+joblib>=1.4
