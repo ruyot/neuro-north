@@ -26,6 +26,12 @@ GYRO = [14, 15, 16]
 # flicker response actually shows up.
 NAMES = ["Oz", "O1", "O2", "PO7", "PO8", "PO3", "PO4", "POz"]
 
+
+def name_of(i):
+    """Electrode label, or a plain index for boards with a different layout
+    (the synthetic board has 16 channels, not 8)."""
+    return NAMES[i] if i < len(NAMES) else f"ch{i + 1}"
+
 # chon   - channel on
 # rldadd - right leg drive add
 #
@@ -77,8 +83,49 @@ def clean(win, rate):
     return out
 
 
-def ssvep_snr(win, rate, targets):
-    """SNR at each stimulus frequency: power in the target bins versus the
+def cca_reference(f, rate, n, harmonics=2):
+    """Pure sin/cos pairs at f and its harmonics. The sin+cos pair lets CCA fit
+    any phase, so we never need to know the brain's lag behind the stimulus."""
+    t = np.arange(n) / rate
+    rows = []
+    for h in range(1, harmonics + 1):
+        rows.append(np.sin(2 * np.pi * f * h * t))
+        rows.append(np.cos(2 * np.pi * f * h * t))
+    return np.vstack(rows)
+
+
+def cca_score(X, Y):
+    """Largest canonical correlation between EEG X (ch x n) and reference Y.
+
+    Solved via QR + SVD rather than inverting covariances: same answer, but it
+    does not blow up when two channels are nearly identical, which happens
+    whenever electrodes share a common-mode signal.
+    """
+    X = X - X.mean(axis=1, keepdims=True)
+    Y = Y - Y.mean(axis=1, keepdims=True)
+    qx, _ = np.linalg.qr(X.T)
+    qy, _ = np.linalg.qr(Y.T)
+    sv = np.linalg.svd(qx.T @ qy, compute_uv=False)
+    return float(np.clip(sv[0], 0.0, 1.0))
+
+
+def cca_decode(win, rate, targets):
+    """One score per candidate frequency, plus the argmax -- the actual decision."""
+    n = win.shape[1]
+    scores = [(f, cca_score(win, cca_reference(f, rate, n))) for f in targets]
+    best = max(scores, key=lambda kv: kv[1])
+    runner = sorted(s for _, s in scores)[-2] if len(scores) > 1 else 0.0
+    margin = best[1] - runner
+    return ("cca: " + "  ".join(f"{f:g}Hz {r:.2f}" for f, r in scores)
+            + f"  -> {best[0]:g}Hz (margin {margin:+.2f})")
+
+
+def ssvep_snr(win, rate, targets, labels):
+    """SNR at each stimulus frequency, reported against `labels` -- which are
+    the SELECTED channels, not all eight. Indexing NAMES directly here silently
+    mislabels every channel after an excluded one.
+
+    Power in the target bins versus the
     power in nearby bins. A flicker response is narrow, so comparing it to its
     own neighbourhood cancels out broadband noise and drift."""
     x = win - win.mean(axis=1, keepdims=True)
@@ -102,7 +149,7 @@ def ssvep_snr(win, rate, targets):
             noise = power[:, nb].mean(axis=1)
             snr = 10 * np.log10(np.maximum(sig, 1e-12) / np.maximum(noise, 1e-12))
             best = int(np.argmax(snr))
-            parts.append(f"{h} {snr[best]:5.1f}dB@{NAMES[best]}")
+            parts.append(f"{h} {snr[best]:5.1f}dB@{labels[best]}")
         out.append(f"{f:g}Hz[" + " ".join(parts) + "]")
     return " | ".join(out)
 
@@ -180,7 +227,7 @@ def main():
     print(f"board={BoardShim.get_board_descr(board_id)['name']}  {rate} Hz  eeg rows={eeg_rows}")
 
     targets = [float(f) for f in args.ssvep.split(",")] if args.ssvep else []
-    labels = [NAMES[r - 1] if r - 1 < len(NAMES) else f"ch{r}" for r in eeg_rows]
+    labels = [name_of(r - 1) for r in eeg_rows]
     print("            " + " ".join(f"{n:>8}" for n in labels))
 
     board = BoardShim(board_id, params)
@@ -228,7 +275,8 @@ def main():
             if args.fft and roll.shape[1] >= 128:
                 line += "  " + describe_spectrum(shown, rate)
             if targets and roll.shape[1] >= 128:
-                line += "  " + ssvep_snr(shown, rate, targets)
+                line += "  " + ssvep_snr(shown, rate, targets, labels)
+                line += "  " + cca_decode(shown, rate, targets)
             if args.real:
                 acc = " ".join(f"{newest[r]:6.2f}" for r in ACCEL)
                 line += f" | loff P{leadoff(newest[LOFF_P])} N{leadoff(newest[LOFF_N])}"
