@@ -46,24 +46,41 @@ RESET_WHEEL_AFTER_PICK = True   # back to a-f / g-l after every pick and space
 
 # Same selection timing as typer.py.
 SELECTION_WINDOW = 1.8     # s of flicker after the marker before classifying
-FEEDBACK_SECONDS = 0.45    # green outline + picked letters on the chosen box
+FEEDBACK_SECONDS = 0.45    # outline + picked letters on the chosen box
 PREDICTION_TIMEOUT = 4.0   # s to wait for the board process before giving up
-FLASH_SECONDS = 0.3        # green outline on an edge zone when its action fires
-MAX_SHOWN_CHARS = 40       # typed line shows only the end of long text
+FLASH_SECONDS = 0.3        # accent border on an edge panel when its action fires
+MAX_TYPED_CHARS = 26       # typed text shows only the end of long text, per side of the caret
 
-# Edge zones, normalised units (screen = -1..1): name -> (centre, size). Kept
-# thin; the boxes themselves come from config.TARGET_X / TARGET_SIZE.
-ZONES = {
-    "top": ((0.0, 0.93), (1.2, 0.14)),
-    "bottom": ((0.0, -0.93), (1.2, 0.14)),
-    "left": ((-0.93, 0.0), (0.14, 1.0)),
-    "right": ((0.93, 0.0), (0.14, 1.0)),
+# Everything here is static and outside the boxes: nothing near them moves or
+# blinks, and text only re-renders when it changes, so the flicker keeps every
+# frame. The boxes themselves come from config.TARGET_X / TARGET_SIZE.
+FONT = "Helvetica Neue"
+TEXT = "#e8eaed"
+MUTED = "#8b93a1"
+FAINT = "#454b56"
+PANEL = "#14161b"
+BORDER = "#272b34"
+ACCENT = "#4ade80"         # picks and actions
+PENDING = "#7cb7ff"        # the word being typed, still ranges
+
+# Panels, normalised units (screen = -1..1): name -> (centre, size)
+PANELS = {
+    "top": ((0.0, 0.905), (1.3, 0.11)),
+    "typed": ((0.0, 0.75), (1.3, 0.12)),
+    "bottom": ((0.0, -0.905), (1.3, 0.11)),
+    "left": ((-0.925, 0.0), (0.12, 1.0)),
+    "right": ((0.925, 0.0), (0.12, 1.0)),
 }
-LABEL_GAP = 0.14        # box letters sit this far above the box (clear of its outline)
-TYPED_Y = 0.77
+CORNER = 0.025             # panel corner radius (fraction of screen height)
+LABEL_GAP = 0.125          # box letters sit this far above the box, clear of its outline
 
-_DIM = [-0.5, -0.5, -0.5]
-_GREEN = "lime"
+# Selection timing bar, in the gap under the boxes: fills green while the EEG
+# that gets classified is recorded (keep looking), then goes grey (free to move
+# your eyes to the next box). The only moving thing on screen, so it's thin,
+# outside the boxes, and fills smoothly rather than flashing.
+PROGRESS_Y = -0.72
+PROGRESS_SIZE = (0.8, 0.016)
+GO_SECONDS = cfg.VISUAL_LATENCY + cfg.GAZE_DURATION   # marker -> end of the classified window
 
 
 def range_name(letters: str) -> str:
@@ -88,24 +105,62 @@ class SpellerUI:
         self.suggestions = ["", ""]     # top, bottom
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
         self._flash_until: dict[str, float] = {}
+        self._line_colors: dict[int, str] = {}
+
+        aspect = win.size[0] / win.size[1]
+
+        def text(pos, height, color=TEXT, anchor="center", **kw):
+            return visual.TextStim(win, pos=pos, height=height, color=color, font=FONT,
+                                   anchorHoriz=anchor, alignText=anchor, wrapWidth=2, **kw)
+
+        def panel(pos, size, radius=CORNER):
+            return visual.ShapeStim(win, units="norm", pos=pos, fillColor=PANEL, lineColor=BORDER,
+                                    lineWidth=2, vertices=_rounded_rect(size, radius, aspect))
 
         self.cues = cues
         for cue in cues:
-            cue.lineColor = _GREEN
+            cue.lineColor = ACCENT
+            cue.lineWidth = 4
+
         # Letters above the box, not on it, so they don't change its brightness.
-        # The green copy shows what was just picked while the page resets underneath.
+        # The accent copy shows what was just picked while the page resets underneath.
         label_pos = [(x, y + h / 2 + LABEL_GAP) for x, y in positions]
-        self.box_labels = [visual.TextStim(win, pos=p, height=0.07, color="white", wrapWidth=0.6)
-                           for p in label_pos]
-        self.picked_labels = [visual.TextStim(win, pos=p, height=0.07, color=_GREEN, wrapWidth=0.6)
-                              for p in label_pos]
-        self.zones = {
-            name: (visual.Rect(win, units="norm", width=size[0], height=size[1], pos=pos,
-                               fillColor=None, lineColor=_DIM, lineWidth=2),
-                   visual.TextStim(win, pos=pos, height=0.05, color="gray", wrapWidth=size[0]))
-            for name, (pos, size) in ZONES.items()
-        }
-        self.typed_text = visual.TextStim(win, pos=(0, TYPED_Y), height=0.08, color="white", wrapWidth=1.6)
+        self.box_labels = [text(p, 0.075) for p in label_pos]
+        self.picked_labels = [text(p, 0.075, ACCENT) for p in label_pos]
+
+        self.panels = {name: panel(pos, size) for name, (pos, size) in PANELS.items()}
+
+        top, bottom = PANELS["top"][0], PANELS["bottom"][0]
+        self.suggestion_text = [text(top, 0.055), text(bottom, 0.055)]
+
+        # Typed text meets the caret at the centre: finished words grow leftwards,
+        # the word in progress (still ranges) grows rightwards in its own colour.
+        y = PANELS["typed"][0][1]
+        self.done_text = text((-0.005, y), 0.07, anchor="right")
+        self.word_text = text((0.015, y), 0.07, PENDING, anchor="left")
+
+        lx, rx = PANELS["left"][0][0], PANELS["right"][0][0]
+        dot = 0.012
+        self.page_dots = [visual.ShapeStim(win, units="norm", pos=(lx + dx / aspect, 0.03),
+                                           vertices=_rounded_rect((2 * dot / aspect, 2 * dot), dot, aspect),
+                                           fillColor=FAINT, lineColor=None)
+                          for dx in (-0.022, 0.022)]
+        self.side_static = [
+            *_arrow(win, (lx, 0.19), -1, aspect),
+            text((lx, 0.11), 0.036, MUTED, bold=True, text="WHEEL"),
+            *_arrow(win, (rx, 0.06), 1, aspect),
+            text((rx, -0.02), 0.036, MUTED, bold=True, text="SPACE"),
+        ]
+        self.next_ranges = text((lx, -0.1), 0.04, FAINT)
+
+        w, bh = PROGRESS_SIZE
+        self.bar_track = visual.Rect(win, units="norm", width=w, height=bh, pos=(0, PROGRESS_Y),
+                                     fillColor=PANEL, lineColor=None)
+        self.bar_fill = visual.Rect(win, units="norm", width=w, height=bh, pos=(-w / 2, PROGRESS_Y),
+                                    anchor="left", fillColor=ACCENT, lineColor=None)
+        self.bar_label = text((0, PROGRESS_Y - 0.045), 0.035, MUTED)
+        self._progress: tuple[str, float] | None = None   # (phase, fraction); None hides the bar
+        self._bar_phase = None
         self._refresh()
 
     # ------------------------------------------------------------------ #
@@ -117,7 +172,7 @@ class SpellerUI:
         self.items.append(letters)
         if RESET_WHEEL_AFTER_PICK:
             self.page = 0
-        _set_text(self.picked_labels[i], " ".join(letters))
+        _set_text(self.picked_labels[i], _spaced(letters))
         self._flash(f"box{i}", FEEDBACK_SECONDS)
         self._changed(f"picked [{range_name(letters)}]")
 
@@ -166,24 +221,43 @@ class SpellerUI:
     @property
     def text(self) -> str:
         """Typed text with unresolved ranges as [a-f]."""
-        return "".join(f"[{range_name(item)}]" if len(item) > 1 else item for item in self.items)
+        return _render(self.items)
 
     # ------------------------------------------------------------------ #
     # Drawing
     # ------------------------------------------------------------------ #
     def draw(self) -> None:
         now = time.perf_counter()
-        for name, (rect, label) in self.zones.items():
-            _set_line(rect, _GREEN if now < self._flash_until.get(name, 0) else _DIM)
-            rect.draw()
-            label.draw()
+        for name, shape in self.panels.items():
+            self._set_line(shape, ACCENT if now < self._flash_until.get(name, 0) else BORDER)
+            shape.draw()
+        for stim in (*self.suggestion_text, self.done_text, self.word_text,
+                     *self.side_static, self.next_ranges, *self.page_dots):
+            stim.draw()
+        if self._progress:
+            self._draw_progress(*self._progress)
         for i, (label, picked) in enumerate(zip(self.box_labels, self.picked_labels)):
             if now < self._flash_until.get(f"box{i}", 0):
                 self.cues[i].draw()
                 picked.draw()
             else:
                 label.draw()
-        self.typed_text.draw()
+
+    def set_progress(self, phase: str | None, fraction: float = 0.0) -> None:
+        """Selection timing bar: "go" (green, keep looking) or "break" (grey,
+        move your eyes), filled to `fraction`. None hides it."""
+        self._progress = None if phase is None else (phase, min(max(fraction, 0.0), 1.0))
+
+    def _draw_progress(self, phase: str, fraction: float) -> None:
+        if phase != self._bar_phase:        # colour + label only change between phases
+            self.bar_fill.fillColor = ACCENT if phase == "go" else FAINT
+            _set_text(self.bar_label, "look" if phase == "go" else "next")
+            self._bar_phase = phase
+        self.bar_track.draw()
+        if fraction > 0:
+            self.bar_fill.width = PROGRESS_SIZE[0] * fraction
+            self.bar_fill.draw()
+        self.bar_label.draw()
 
     def _flash(self, name: str, seconds: float = FLASH_SECONDS) -> None:
         self._flash_until[name] = time.perf_counter() + seconds
@@ -194,17 +268,43 @@ class SpellerUI:
         print(f"[ui] {what:<24} ->  {self.text!r}")
 
     def _refresh(self) -> None:
+        """Push the state into the stims. Only what changed gets re-rendered."""
         for label, letters in zip(self.box_labels, self.pages[self.page]):
-            _set_text(label, " ".join(letters))
+            _set_text(label, _spaced(letters))
+        for i, dot in enumerate(self.page_dots):
+            color = TEXT if i == self.page else FAINT
+            if self._line_colors.get(id(dot)) != color:
+                dot.fillColor = color
+                self._line_colors[id(dot)] = color
         other = self.pages[(self.page + 1) % len(self.pages)]
-        _set_text(self.zones["left"][1], "<\nWHEEL\n\n" + "\n".join(range_name(r) for r in other))
-        _set_text(self.zones["right"][1], "SPACE\n>")
-        _set_text(self.zones["top"][1], self.suggestions[0])
-        _set_text(self.zones["bottom"][1], self.suggestions[1])
-        shown = self.text
-        if len(shown) > MAX_SHOWN_CHARS:
-            shown = "..." + shown[-MAX_SHOWN_CHARS:]
-        _set_text(self.typed_text, shown + "|")
+        _set_text(self.next_ranges, "\n".join(range_name(r) for r in other))
+
+        for stim, word in zip(self.suggestion_text, self.suggestions):
+            _set_text(stim, word or "suggestion")
+            stim.color = TEXT if word else FAINT
+
+        word = self.current_word()
+        done = _render(self.items[:len(self.items) - len(word)])
+        if len(done) > MAX_TYPED_CHARS:
+            done = "…" + done[-MAX_TYPED_CHARS:]
+        pending = _render(word)
+        if len(pending) > MAX_TYPED_CHARS:
+            pending = "…" + pending[-MAX_TYPED_CHARS:]
+        _set_text(self.done_text, done)
+        _set_text(self.word_text, pending + "|")
+
+    def _set_line(self, shape, color: str) -> None:
+        if self._line_colors.get(id(shape)) != color:
+            shape.lineColor = color
+            self._line_colors[id(shape)] = color
+
+
+def _render(items: list[str]) -> str:
+    return "".join(f"[{range_name(item)}]" if len(item) > 1 else item for item in items)
+
+
+def _spaced(letters: str) -> str:
+    return "  ".join(letters)
 
 
 def _set_text(stim, text: str) -> None:
@@ -213,13 +313,34 @@ def _set_text(stim, text: str) -> None:
         stim.text = text
 
 
-_line_colors: dict[int, object] = {}
+def _arrow(win, pos, direction: int, aspect: float, size: float = 0.028):
+    """A thin arrow (shaft + head) pointing left (-1) or right (+1). Drawn as
+    lines because the font's arrow glyphs don't all render."""
+    from psychopy import visual
+
+    x, y = pos
+    tip = x + direction * size / aspect
+    tail = x - direction * size / aspect
+    back = tip - direction * 0.6 * size / aspect
+    style = dict(units="norm", lineColor=MUTED, lineWidth=3, closeShape=False, fillColor=None)
+    return [visual.ShapeStim(win, vertices=[(tail, y), (tip, y)], **style),
+            visual.ShapeStim(win, vertices=[(back, y + 0.6 * size), (tip, y), (back, y - 0.6 * size)], **style)]
 
 
-def _set_line(rect, color) -> None:
-    if _line_colors.get(id(rect)) != color:
-        rect.lineColor = color
-        _line_colors[id(rect)] = color
+def _rounded_rect(size, radius: float, aspect: float, steps: int = 6):
+    """Vertices of a rounded rectangle in norm units. `radius` is in screen
+    heights; x is scaled by the aspect ratio so the corners come out round."""
+    import numpy as np
+
+    w, h = size
+    ry = min(radius, h / 2)
+    rx = min(radius / aspect, w / 2)
+    verts = []
+    for cx, cy, start in ((w / 2 - rx, h / 2 - ry, 0), (-w / 2 + rx, h / 2 - ry, 90),
+                          (-w / 2 + rx, -h / 2 + ry, 180), (w / 2 - rx, -h / 2 + ry, 270)):
+        for a in np.radians(np.linspace(start, start + 90, steps)):
+            verts.append((cx + rx * np.cos(a), cy + ry * np.sin(a)))
+    return verts
 
 
 # --------------------------------------------------------------------------- #
@@ -254,12 +375,16 @@ def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
 def run_keys(win, ui: SpellerUI, squares) -> None:
     """No board, no flicker: boxes shown dim grey, 1 / 2 pick."""
     for sq in squares:
-        sq.fillColor = [-0.7, -0.7, -0.7]
-    while handle_keys(ui, boxes=True):
-        for sq in squares:
-            sq.draw()
-        ui.draw()
-        win.flip()
+        sq.fillColor = sq.lineColor = "#23262e"
+    win.recordFrameIntervals = True
+    try:
+        while handle_keys(ui, boxes=True):
+            for sq in squares:
+                sq.draw()
+            ui.draw()
+            win.flip()
+    finally:
+        _report_frames(win)
 
 
 def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
@@ -274,47 +399,73 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
     state, t_mark, t_req, t_fb, seen, actions_at_mark = "mark", 0.0, 0.0, 0.0, 0, 0
     phase0 = 0.0                # flicker time origin, re-anchored at each marker (see typer.py)
     marking = False
-    while True:
-        t = clock.getTime()
-        if state == "mark":
-            phase0 = t
-            seen = recorder.prediction_count.value
-            actions_at_mark = ui.action_count
-            marking = True
-            t_mark, state = t, "collecting"
+    dropped_at_mark = 0
+    win.recordFrameIntervals = True
+    try:
+        while True:
+            t = clock.getTime()
+            if state == "mark":
+                phase0 = t
+                seen = recorder.prediction_count.value
+                actions_at_mark = ui.action_count
+                dropped_at_mark = win.nDroppedFrames
+                marking = True
+                t_mark, state = t, "collecting"
 
-        flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
-        ui.draw()
-        win.flip()
+            if state == "feedback":          # grey drains away: next selection is about to start
+                ui.set_progress("break", 1 - (t - t_fb) / FEEDBACK_SECONDS)
+            elif t - t_mark < GO_SECONDS:
+                ui.set_progress("go", (t - t_mark) / GO_SECONDS)
+            else:
+                ui.set_progress("break", 1.0)
 
-        if marking:                      # first flicker frame is now on screen
-            recorder.mark_onset(cfg.LIVE_MARKER)
-            marking = False
+            flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
+            ui.draw()
+            win.flip()
 
-        if not handle_keys(ui, boxes=False):
-            return
+            if marking:                      # first flicker frame is now on screen
+                recorder.mark_onset(cfg.LIVE_MARKER)
+                marking = False
 
-        if state == "collecting":
-            if ui.action_count != actions_at_mark:
-                state = "mark"           # nothing requested yet, so restarting is safe
-            elif t - t_mark >= SELECTION_WINDOW:
-                recorder.request_prediction()
-                t_req, state = t, "waiting"
-        elif state == "waiting":
-            # Wait for this prediction even if it'll be dropped, so it can't be
-            # mistaken for the next selection's.
-            if recorder.prediction_count.value != seen:
+            if not handle_keys(ui, boxes=False):
+                return
+
+            if state == "collecting":
                 if ui.action_count != actions_at_mark:
-                    print("[ui] action during the selection - pick dropped")
+                    state = "mark"           # nothing requested yet, so restarting is safe
+                elif t - t_mark >= SELECTION_WINDOW:
+                    late = win.nDroppedFrames - dropped_at_mark
+                    if late:
+                        print(f"[warn] {late} late frame(s) in this selection - flicker timing slipped")
+                    recorder.request_prediction()
+                    t_req, state = t, "waiting"
+            elif state == "waiting":
+                # Wait for this prediction even if it'll be dropped, so it can't be
+                # mistaken for the next selection's.
+                if recorder.prediction_count.value != seen:
+                    if ui.action_count != actions_at_mark:
+                        print("[ui] action during the selection - pick dropped")
+                        state = "mark"
+                    else:
+                        ui.select_box(recorder.last_prediction.value)
+                        t_fb, state = t, "feedback"
+                elif t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive():
+                    print("[warn] no prediction for this selection - trying again")
                     state = "mark"
-                else:
-                    ui.select_box(recorder.last_prediction.value)
-                    t_fb, state = t, "feedback"
-            elif t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive():
-                print("[warn] no prediction for this selection - trying again")
+            elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
                 state = "mark"
-        elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
-            state = "mark"
+    finally:
+        _report_frames(win)
+
+
+def _report_frames(win) -> None:
+    """How many frames missed the monitor refresh. Non-zero while flickering
+    means the UI is too heavy to draw in time."""
+    win.recordFrameIntervals = False
+    total = len(win.frameIntervals)
+    if total:
+        print(f"[frames] {win.nDroppedFrames} late of {total} "
+              f"({100 * win.nDroppedFrames / total:.1f}%)")
 
 
 def main() -> None:
