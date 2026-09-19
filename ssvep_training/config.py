@@ -18,7 +18,7 @@ EXPECTED_REFRESH_HZ = 60
 # centre x-offset, then (width, height). Further apart = less gaze crosstalk
 # between targets; smaller = weaker SSVEP, since the response scales with
 # stimulus area. Keep centre +/- half-width under ~0.96 or the cue outline clips.
-TARGET_X = 0.70
+TARGET_X = 0.50
 TARGET_SIZE = (0.45, 1.0)
 
 # Trial timing (seconds): [cue] -> [flicker] -> [rest], marker at flicker onset.
