@@ -18,7 +18,7 @@ from .session import encode_marker
 
 
 class Quit(Exception):
-    """Run ended early: Escape pressed, or the board never started streaming."""
+    """Run ended early: Escape pressed, or the board failed/stopped streaming."""
 
 WARNING = (f"This screen FLASHES at {min(cfg.STIMULUS_FREQUENCIES):g}-{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\n"
            "Do not use it if you have epilepsy or have ever had a seizure,\n"
@@ -40,28 +40,41 @@ def main() -> None:
     session_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("session_%Y%m%d_%H%M%S"))
     # Start the board first: its setup runs while the window opens.
     recorder = RecordingProcess(port=args.port, session_dir=session_dir, channels=channels)
+    completed = 0
+    win = None
+    core = None
     recorder.start()
 
-    # PsychoPy is imported only in the display process, after the board process exists.
-    from psychopy import core
-    from .stimulus import build_stimuli, build_window, run_trial, wait_for_board, wait_for_key
-
-    win = build_window(fullscreen=not args.windowed)
-    print("Press SPACE (or click) in the flicker window to continue at each screen; Escape quits.")
-    completed = 0
     try:
+        # PsychoPy stays in the display process; setup failures still stop and save the board.
+        from psychopy import core, event
+        from .stimulus import (build_stimuli, build_window, run_trial, show_message,
+                               wait_for_board, wait_for_key)
+
+        win = build_window(fullscreen=not args.windowed)
+        print("Press SPACE (or click) in the flicker window to continue at each screen; Escape quits.")
         if not wait_for_key(win, WARNING):
             raise Quit
-        if not wait_for_board(win, recorder, "Setting up the Knight board (~8 s)..."):
+        if not wait_for_board(win, recorder, "Setting up the Knight board..."):
             raise Quit("the board never started streaming - see [board] above")
 
         squares, cues, labels = build_stimuli(win)
         for block in range(1, args.blocks + 1):
+            if recorder.failed.value or not recorder.is_alive():
+                raise Quit("the board stopped streaming - see [board] above")
             if not wait_for_key(win, f"Block {block} of {args.blocks}\n\n"
                                      "Look only at the square outlined in red.\n"
-                                     "Blink between flashes, not during them.\n\n"
+                                     "Blink during block breaks.\n"
+                                     "Take breaks or stop whenever you need to.\n\n"
                                      "Press SPACE to start."):
                 raise Quit
+            history_clock = core.Clock()
+            while history_clock.getTime() < cfg.FILTER_HISTORY:
+                if recorder.failed.value or not recorder.is_alive():
+                    raise Quit("the board stopped streaming - see [board] above")
+                if "escape" in event.getKeys(keyList=["escape"]):
+                    raise Quit
+                show_message(win, "Hold still; preparing clean signal history")
             # Random cue order per block, so the model can't learn order/fatigue
             # effects; each trial is labelled by target via its marker.
             order = list(range(cfg.N_TARGETS))
@@ -69,7 +82,11 @@ def main() -> None:
             for target in order:
                 if not run_trial(win, squares, cues, target, recorder,
                                  encode_marker(block, target), overlay=labels):
-                    raise Quit
+                    raise Quit("the board stopped streaming - see [board] above"
+                               if recorder.failed.value or not recorder.is_alive()
+                               else "trial interrupted")
+            if recorder.failed.value or not recorder.is_alive():
+                raise Quit("the board stopped streaming - see [board] above")
             recorder.request_save()
             completed = block
 
@@ -80,10 +97,14 @@ def main() -> None:
         print("Stopped: Ctrl+C in the terminal.")
     finally:
         recorder.stop()
-        recorder.join(timeout=15)   # final save happens as the board process exits
-        win.close()
-        summarize(session_dir, completed)
-        core.quit()
+        recorder.join()   # wait for the final save before leaving the display process
+        try:
+            if win is not None:
+                win.close()
+            summarize(session_dir, completed)
+        finally:
+            if core is not None:
+                core.quit()
 
 
 def summarize(session_dir: str, completed: int) -> None:
@@ -92,11 +113,16 @@ def summarize(session_dir: str, completed: int) -> None:
     if not os.path.exists(os.path.join(session_dir, "raw.npz")):
         print("Nothing was recorded.")
         return
-    trials = load_trials(session_dir)
-    n = trials.eeg.shape[-1]
     print(f"\nSession saved: {session_dir}")
-    print(f"  {completed} complete block(s), {n} usable trial(s)"
-          + (f", {trials.skipped} skipped (not enough data around the marker)" if trials.skipped else ""))
+    try:
+        trials = load_trials(session_dir)
+    except ValueError as exc:
+        print(f"  Calibration trial summary unavailable: {exc}")
+        return
+    n = trials.eeg.shape[-1]
+    print(f"  {completed} complete block(s), {n} accepted trial(s), {trials.skipped} rejected")
+    for reason, count in sorted(trials.rejection_counts.items()):
+        print(f"    {reason}: {count}")
     if n:
         print("Next: python -m ssvep_training.evaluate_trca")
 

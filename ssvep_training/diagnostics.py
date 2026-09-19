@@ -9,9 +9,9 @@ import numpy as np
 
 from .session import Trials
 
-NFFT = 1024              # zero-padded FFT -> smooth spectrum
+NFFT = 1024              # zero-padding smooths the plot, not the true frequency resolution
 PEAK_HALF_WIDTH = 0.3    # Hz: power at f = max within f +/- this
-FILTER_TOP = 40.0        # stream.clean()'s band-pass edge: harmonics at/above it are gone
+FILTER_TOP = 40.0        # stream.clean()'s -3 dB band-pass edge, not a brick-wall cutoff
 CLEAR, WEAK = 1.3, 1.1   # thresholds on the diagonal ratio
 
 ALPHA_BAND = (8.0, 13.0)
@@ -27,7 +27,7 @@ def trial_spectra(eeg: np.ndarray, rate: int):
 
 
 def power_at(freqs, power, f):
-    """Peak power near f, plus near 2f when 2f survives the 1-40 Hz filter."""
+    """Peak power near f and 2f, scoring only bands strictly below the 40 Hz edge."""
     total = 0
     for h in (1, 2):
         if h * f + PEAK_HALF_WIDTH < min(FILTER_TOP, freqs[-1]):
@@ -71,7 +71,9 @@ def report(trials: Trials, session_name: str, plot_path: str | None = None) -> d
     rel_mean = rel.mean(axis=-1)
     diag = np.diag(rel_mean)
 
-    print("SSVEP check: relative power at each flicker frequency (+2nd harmonic below 40 Hz)")
+    print(f"SSVEP check: {trials.eeg.shape[-1]} accepted, {trials.skipped} rejected trial(s).")
+    print("Relative power at each flicker frequency (+2nd harmonic strictly below 40 Hz)")
+    print("40 Hz is the front-end -3 dB edge, not removed; the contrast score excludes that edge.")
     print("1.00 = average for that frequency; the diagonal (*) should stand out\n")
     print("  looking at    | " + " ".join(f"{f:>7.2f}Hz" for f in fs) + " | verdict")
     for i, (letter, f) in enumerate(zip(letters, fs)):
@@ -82,9 +84,9 @@ def report(trials: Trials, session_name: str, plot_path: str | None = None) -> d
 
     per_channel = np.array([np.diag(rel[..., c]).mean() for c in range(rel.shape[-1])])
     ranked = ", ".join(f"{trials.names[c]} {per_channel[c]:.2f}" for c in np.argsort(per_channel)[::-1])
-    print(f"\n  Response by electrode (higher = better): {ranked}")
+    print(f"\n  Mean target-frequency contrast by electrode: {ranked}")
 
-    # Resting alpha, measured on trials whose targets put nothing into 8-13 Hz,
+    # Alpha-band power, measured on trials whose targets put nothing into 8-13 Hz,
     # against quiet bands clear of every target and harmonic.
     at_risk = [i for i, f in enumerate(fs) if _harmonics_in_alpha(f)]
     clean_trials = ~np.isin(trials.targets, at_risk)
@@ -93,22 +95,22 @@ def report(trials: Trials, session_name: str, plot_path: str | None = None) -> d
     alpha_ratio = float(spec[alpha].max() / spec[_quiet_mask(freqs, fs)].mean())
     alpha_peak = float(freqs[alpha][np.argmax(spec[alpha])])
     if alpha_ratio > 4:
-        risk = ("; " + ", ".join(f"{letters[i]} is most at risk ({'/'.join(f'{h:g}' for h in _harmonics_in_alpha(fs[i]))}"
-                                 f" Hz harmonic in the alpha band)" for i in at_risk)) if at_risk else ""
-        print(f"  Strong alpha (~{alpha_peak:.1f} Hz, {alpha_ratio:.0f}x background): relax less / keep your "
-              f"eyes on the squares{risk}.")
+        risk = ("; " + ", ".join(f"{letters[i]} has a {'/'.join(f'{h:g}' for h in _harmonics_in_alpha(fs[i]))}"
+                                 " Hz harmonic in the alpha band" for i in at_risk)) if at_risk else ""
+        print(f"  Alpha-band peak (~{alpha_peak:.1f} Hz, {alpha_ratio:.0f}x background){risk}.")
 
     failing = [i for i in range(len(fs)) if diag[i] < CLEAR]
     if not failing:
-        verdict = "working"
-        print("\n  -> SSVEP visible for every letter. Headset is working; tune software if accuracy is low.")
+        verdict = "expected_pattern"
+        print("\n  -> Expected target-frequency pattern observed for every target in the analyzed trials.")
     elif diag.mean() < WEAK:
         verdict = "none"
-        print("\n  -> No SSVEP response. Check electrode contact/placement before changing code.")
+        print("\n  -> No clear target-frequency pattern in the analyzed trials. Review contact, timing and raw EEG.")
     else:
         verdict = "partial"
-        print(f"\n  -> Partial response (weak: {', '.join(letters[i] for i in failing)}). Improve contact on "
-              "the weakest electrodes, and check those frequencies are strong enough for you.")
+        print(f"\n  -> Partial target-frequency pattern in the analyzed trials (weak: "
+              f"{', '.join(letters[i] for i in failing)}). Review contact, timing and raw EEG.")
+    print("  This does not establish clean EEG, correct acquisition, or intended selections.")
 
     if plot_path:
         _plot(freqs, power, trials, rel_mean, session_name, plot_path)

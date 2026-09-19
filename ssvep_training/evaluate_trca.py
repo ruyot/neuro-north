@@ -25,31 +25,44 @@ def main() -> None:
                  "python -m ssvep_training.collect_training_data first.")
     name = os.path.basename(os.path.normpath(path))
 
-    full = load_trials(path, full=True)       # whole 1.5 s flicker, for the spectrum
-    trials = load_trials(path)                # the 1 s analysis window, for TRCA
+    try:
+        full = load_trials(path, full=True)   # whole flicker, for the spectrum
+        trials = load_trials(path)           # analysis window, for TRCA
+    except ValueError as exc:
+        sys.exit(f"Cannot evaluate session {name}: {exc}")
     blocks = sorted(set(trials.blocks.tolist()))
     targets = ", ".join(f"{l} {f:.2f} Hz" for l, f in zip(trials.letters, trials.freqs))
-    print(f"Session {name}: {trials.eeg.shape[-1]} trials, {len(blocks)} blocks, {trials.rate} Hz, targets {targets}"
-          + (f", {trials.skipped} skipped" if trials.skipped else "") + "\n")
-    if trials.eeg.shape[-1] == 0:
-        sys.exit("No usable trials in this session.")
+    accepted = int(trials.eeg.shape[-1])
+    counts = {letter: int((trials.targets == t).sum()) for t, letter in enumerate(trials.letters)}
+    print(f"Session {name}: {accepted} accepted, {trials.skipped} rejected, {len(blocks)} blocks, "
+          f"{trials.rate} Hz, targets {targets}")
+    print("Accepted by target: " + ", ".join(f"{letter} {count}" for letter, count in counts.items()))
+    reasons = ", ".join(f"{reason}={count}" for reason, count in sorted(trials.rejection_counts.items()))
+    print("Rejection flags (can overlap): " + (reasons or "none") + "\n")
 
-    plot = None if args.no_plot else os.path.join(cfg.RESULTS_DIR, f"spectrum_{name}.png")
-    spectrum = report(full, name, plot)
-    print("\n" + "-" * 72 + "\n")
-
-    summary = {"session": path, "trials": int(trials.eeg.shape[-1]), "blocks": len(blocks),
-               "spectrum_verdict": spectrum["verdict"], "alpha_ratio": spectrum["alpha_ratio"]}
-    if len(blocks) >= 2:
+    summary = {"session": path, "trials": accepted, "rejected": trials.skipped,
+               "rejection_counts": trials.rejection_counts, "accepted_per_target": counts, "blocks": len(blocks)}
+    try:
+        missing = [f"{letter} ({count})" for letter, count in counts.items() if count == 0]
+        if missing:
+            raise ValueError("No accepted trials for " + ", ".join(missing) + "; spectra and TRCA skipped.")
+        plot = None if args.no_plot else os.path.join(cfg.RESULTS_DIR, f"spectrum_{name}.png")
+        spectrum = report(full, name, plot)
+        summary.update(spectrum_verdict=spectrum["verdict"], alpha_ratio=spectrum["alpha_ratio"])
+        print("\n" + "-" * 72 + "\n")
+        if len(blocks) < 3:
+            raise ValueError(f"Need at least 3 blocks for the accuracy test, found {len(blocks)}")
         cv = cross_validate(trials)
+    except ValueError as exc:
+        summary["trca_error"] = str(exc)
+        print(f"TRCA unavailable: {exc}")
+    else:
         print_cv(cv)
         pair = standout_confusion(cv)
         if pair:
             print("\n  " + explain_confusion(cv, *pair))
         summary.update(trca_accuracy=cv.mean_accuracy, trca_bits_per_min=float(cv.itr.mean()),
                        confusion=cv.confusion.tolist())
-    else:
-        print("Need at least 2 blocks for the accuracy test.")
 
     os.makedirs(cfg.RESULTS_DIR, exist_ok=True)
     out = os.path.join(cfg.RESULTS_DIR, f"eval_{name}.json")

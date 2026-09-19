@@ -15,7 +15,21 @@ from dotenv import load_dotenv
 load_dotenv()                     # reads .env from the project directory
 PORT = os.getenv("PORT_PATH")     # e.g. /dev/cu.usbserial-XXXX
 
-# BrainFlow 5.23 does not tag this board's IMU rows, so we take them from the
+
+def _load_mains_hz() -> int:
+    raw = os.getenv("MAINS_HZ", "60")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"MAINS_HZ must be 50 or 60, got {raw!r}") from None
+    if value not in (50, 60):
+        raise ValueError(f"MAINS_HZ must be 50 or 60, got {value!r}")
+    return value
+
+
+MAINS_HZ = _load_mains_hz()
+
+# BrainFlow 5.23.0 does not tag this board's IMU rows, so we take them from the
 # driver source (knight_imu.cpp): other_channels[0..1] are lead-off, then
 # other_channels[2+i] for i=0..8 is ax,ay,az,gx,gy,gz,mx,my,mz. Row numbers are
 # indices into the data array below, and they are the Knight's (board id 66)
@@ -25,6 +39,8 @@ LOFF_P, LOFF_N = 9, 10    # lead-off status bitmasks, one bit per channel
 ACCEL = [11, 12, 13]
 GYRO = [14, 15, 16]
 MAG = [17, 18, 19]
+# IMU payloads are firmware float32 values passed through without SDK scaling;
+# documented m/s^2, rad/s and uT units are not verified on this firmware.
 
 # Electrode montage, board channel 1-8 in order. Occipital / parieto-occipital
 # for SSVEP: the visual cortex sits at the back of the head, so this is where a
@@ -40,49 +56,78 @@ def name_of(i):
 # chon   - channel on
 # rldadd - right leg drive add
 #
-# Gain MUST stay 12: brainflow's knight_imu.cpp hardcodes 12 into its
-# counts->microvolts scale factor, so any other gain gives wrong uV.
+# Gain MUST stay 12: brainflow's knight_imu.cpp hardcodes it into the
+# ADC-count -> SDK-unit scale; electrode-level microvolts remain unverified.
 GAIN = 12
 
 
-def send_cmd(board, cmd):
-    """Send one config command and describe what came back.
-
-    config_board writes the command first, THEN tries to read a reply. Once a
-    channel is on, the Knight free-runs binary frames, so that "reply" is EEG
-    packets and brainflow's .decode('utf-8') raises. The write already
-    succeeded, so a decode error means sent-and-board-is-streaming, not failed.
-
-    This firmware never acks. "quiet" means nothing was in the read buffer and
-    "streaming" means we caught it mid-frame -- neither reports success.
-    """
+def validate_eeg_channels(channels) -> list[int]:
+    """Return a nonempty, unique Knight channel selection in board-row order."""
+    message = "EEG channels must be a nonempty unique subset of integers 1-8."
     try:
-        r = board.config_board(cmd)
-        return repr(r) if r else "quiet"
-    except UnicodeDecodeError:
-        return "sent (board streaming)"
+        selected = list(channels)
+    except TypeError:
+        raise ValueError(message) from None
+    if (not selected
+            or any(isinstance(ch, bool) or not isinstance(ch, (int, np.integer))
+                   or not 1 <= ch <= 8 for ch in selected)
+            or len(set(selected)) != len(selected)):
+        raise ValueError(message)
+    return sorted(int(ch) for ch in selected)
+
+
+def validate_knight_descriptor(board_id: int) -> dict:
+    """Reject SDK layouts that do not match the pinned Knight IMU driver."""
+    if board_id != 66:
+        raise ValueError(f"Expected Knight IMU board 66, got {board_id}.")
+    descriptor = BoardShim.get_board_descr(board_id)
+    expected = {
+        "num_rows": 22,
+        "sampling_rate": 125,
+        "package_num_channel": 0,
+        "eeg_channels": list(range(1, 9)),
+        "other_channels": [LOFF_P, LOFF_N, *ACCEL, *GYRO, *MAG],
+        "timestamp_channel": 20,
+        "marker_channel": 21,
+    }
+    for key, value in expected.items():
+        if descriptor.get(key) != value:
+            raise ValueError(
+                f"Knight IMU descriptor mismatch for {key}: "
+                f"expected {value!r}, got {descriptor.get(key)!r}."
+            )
+    return descriptor
+
+
+def send_cmd(board, cmd):
+    """Write while streaming; a successful write is not a firmware acknowledgement."""
+    response = board.config_board(cmd)
+    time.sleep(1.0)
+    return f"write returned {response!r} (no firmware acknowledgement)"
 
 
 def enable_eeg_channels(board, channels):
-    """Knight EEG channels ship disabled - firmware needs these two commands each.
-
-    Called BEFORE start_stream(), so the acquisition thread is not yet trying
-    to parse 0xA0/0xC0 frames while these commands and the board's reply bytes
-    are in flight. start_stream() then flushes the serial buffer for us.
-    """
+    """Apply the complete Knight channel/bias set after start_stream()."""
+    channels = validate_eeg_channels(channels)
+    for ch in range(1, 9):
+        if ch not in channels:
+            r1 = send_cmd(board, f"rldremove_{ch}")
+            r2 = send_cmd(board, f"choff_{ch}")
+            print(f"  channel {ch}: rldremove -> {r1} | choff -> {r2}")
     for ch in channels:
-        r1 = send_cmd(board, f"chon_{ch}_{GAIN}")   # channel on, at this gain
-        time.sleep(0.3)
-        r2 = send_cmd(board, f"rldadd_{ch}")        # tie into the bias/reference loop
-        time.sleep(0.3)
+        r1 = send_cmd(board, f"chon_{ch}_{GAIN}")
+        r2 = send_cmd(board, f"rldadd_{ch}")
         print(f"  channel {ch}: chon -> {r1} | rldadd -> {r2}")
 
 
-def clean(win, rate):
-    """Strip mains hum and out-of-band junk. Filters run in-place, per channel."""
-    out = np.ascontiguousarray(win, dtype=np.float64)
+def clean(win, rate, mains_hz=MAINS_HZ):
+    """Strip mains hum and out-of-band junk. Copies input; never aliases it."""
+    if mains_hz not in (50, 60):
+        raise ValueError(f"mains_hz must be 50 or 60, got {mains_hz!r}")
+    noise_type = NoiseTypes.FIFTY.value if mains_hz == 50 else NoiseTypes.SIXTY.value
+    out = np.array(win, dtype=np.float64, order="C", copy=True)
     for ch in out:
-        DataFilter.remove_environmental_noise(ch, rate, NoiseTypes.SIXTY.value)
+        DataFilter.remove_environmental_noise(ch, rate, noise_type)
         DataFilter.perform_bandpass(ch, rate, 1.0, 40.0, 4,
                                     FilterTypes.BUTTERWORTH.value, 0.0)
     return out
@@ -202,13 +247,13 @@ def main():
     ap.add_argument("--quiet", action="store_true", help="silence brainflow's own logging")
     ap.add_argument("--settle", type=float, default=3.0, help="pause after connect before configuring")
     ap.add_argument("--fft", action="store_true", help="show where the signal energy actually sits")
-    ap.add_argument("--filter", action="store_true", help="notch 60 Hz + bandpass 1-40 Hz")
+    ap.add_argument("--filter", action="store_true", help="notch MAINS_HZ (50/60) + bandpass 1-40 Hz")
     ap.add_argument("--ssvep", default="",
                     help="stimulus frequencies to score, e.g. 12,15")
     ap.add_argument("--window", type=int, default=256,
                     help="rolling samples for the fft (256=2s, 512=4s sharper)")
-    ap.add_argument("--channels", default="",
-                    help="only enable/show these, e.g. 2,3,6,7 (default: all 8)")
+    ap.add_argument("--channels",
+                    help="only enable/show these, e.g. 2,3,6,7 (default: all EEG channels)")
     args = ap.parse_args()
 
     if args.quiet:
@@ -225,32 +270,34 @@ def main():
     else:
         board_id = int(BoardIds.SYNTHETIC_BOARD)
 
-    eeg_rows = BoardShim.get_board_descr(board_id)["eeg_channels"]
-    if args.channels:
-        # Enabling only the good electrodes also takes the bad ones OUT of the
-        # bias loop, which is the other thing worth testing.
-        keep = {int(c) for c in args.channels.split(",")}
-        eeg_rows = [r for r in eeg_rows if r in keep]
-    rate = BoardShim.get_sampling_rate(board_id)
-    print(f"board={BoardShim.get_board_descr(board_id)['name']}  {rate} Hz  eeg rows={eeg_rows}")
+    descriptor = (validate_knight_descriptor(board_id) if args.real
+                  else BoardShim.get_board_descr(board_id))
+    try:
+        requested = ([int(c) for c in args.channels.split(",")] if args.channels is not None
+                     else descriptor["eeg_channels"])
+        eeg_rows = (validate_eeg_channels(requested) if args.real
+                    else [r for r in descriptor["eeg_channels"] if r in requested])
+    except ValueError as exc:
+        ap.error(str(exc))
+    rate = descriptor["sampling_rate"]
+    print(f"board={descriptor['name']}  {rate} Hz  eeg rows={eeg_rows}")
 
     targets = [float(f) for f in args.ssvep.split(",")] if args.ssvep else []
     labels = [name_of(r - 1) for r in eeg_rows]
     print("            " + " ".join(f"{n:>8}" for n in labels))
 
     board = BoardShim(board_id, params)
-    board.prepare_session()       # 2. open the serial connection
     try:
-        if args.real:             # 3. enable channels while NOT streaming
-            # Opening the port resets the MCU, so it is still printing boot
-            # chatter for a moment. The good run lost chon_1 to exactly this
-            # and channel 1 read 0.0 for the whole session.
+        board.prepare_session()   # 2. open the serial connection
+        if args.real:
             print(f"waiting {args.settle}s for boot chatter to finish...")
             time.sleep(args.settle)
-            print("enabling EEG channels...")
+        board.start_stream()      # host reader must run before channel commands
+        if args.real:
+            time.sleep(2.0)
+            print("applying EEG channel and bias membership...")
             enable_eeg_channels(board, eeg_rows)
-
-        board.start_stream()      # 4. flushes serial, then samples flow into a ring buffer
+            board.get_board_data()  # discard configuration-period samples
         empty = 0
         roll = None               # rolling window, needed for any useful fft
         # the speller's own detector, so this line tests the thing that will type
@@ -307,11 +354,17 @@ def main():
     finally:
         # 6. Always release, or the serial port stays locked. stop_stream can
         # raise if we never got that far, and that would mask the real error.
+        error = sys.exc_info()[1]
         try:
             board.stop_stream()
         except Exception:
             pass
-        board.release_session()
+        try:
+            board.release_session()
+        except Exception as cleanup_error:
+            if error is None:
+                raise
+            print(f"Board release failed during cleanup: {cleanup_error}", file=sys.stderr)
 
 
 if __name__ == "__main__":

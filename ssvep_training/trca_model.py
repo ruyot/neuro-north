@@ -22,11 +22,16 @@ def build_model(rate: int) -> TRCA:
     return TRCA(rate, cfg.FILTERBANK, cfg.USE_ENSEMBLE_TRCA)
 
 
+def _require_training_trials(trials: Trials) -> None:
+    counts = [np.count_nonzero(trials.targets == t) for t in range(trials.n_targets)]
+    deficient = [f"{trials.letters[t]} ({count})" for t, count in enumerate(counts) if count < 2]
+    if deficient:
+        raise ValueError("Need at least 2 accepted trials per target; deficient: " + ", ".join(deficient))
+
+
 def fit(trials: Trials) -> TRCA:
-    """Train on every trial in the session (what live typing uses)."""
-    missing = sorted(set(range(trials.n_targets)) - set(trials.targets.tolist()))
-    if missing:
-        raise ValueError("no calibration trials for " + ", ".join(trials.letters[t] for t in missing))
+    """Train on all admitted trials, with at least two per declared target."""
+    _require_training_trials(trials)
     model = build_model(trials.rate)
     model.fit(trials.eeg, trials.targets)
     return model
@@ -67,8 +72,8 @@ def cross_validate(trials: Trials, classify=None) -> CVResult:
     detectors (e.g. SNR, which ignores the training data) plug in the same way.
     """
     blocks = sorted(set(trials.blocks.tolist()))
-    if len(blocks) < 2:
-        raise ValueError(f"need at least 2 blocks to cross-validate, found {len(blocks)}")
+    if len(blocks) < 3:
+        raise ValueError(f"Need at least 3 blocks to cross-validate, found {len(blocks)}")
     classify = classify or _trca_classify
     n = trials.n_targets
     confusion = np.zeros((n, n), dtype=int)
@@ -77,6 +82,10 @@ def cross_validate(trials: Trials, classify=None) -> CVResult:
         test = trials.blocks == held_out
         train = Trials(trials.eeg[..., ~test], trials.targets[~test], trials.blocks[~test],
                        trials.rate, trials.names, trials.freqs, trials.letters, trials.rows)
+        try:
+            _require_training_trials(train)
+        except ValueError as exc:
+            raise ValueError(f"Cannot hold out block {held_out}: {exc}") from exc
         predicted = np.asarray(classify(train, trials.eeg[..., test]))
         truth = trials.targets[test]
         for t, p in zip(truth, predicted):

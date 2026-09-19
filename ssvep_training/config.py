@@ -33,8 +33,9 @@ GAZE_DURATION = 1.0     # length of the window that gets classified
 # trial is filtered with this much EEG before the onset, then cut.
 FILTER_HISTORY = 4.0
 
-# Calibration markers are block * 10 + target + 1 (32 = block 3, target B).
-LIVE_MARKER = 99        # live typing trials, no label
+# Relative artifact admission, fitted only during the explicit quiet baseline.
+QUALITY_BASELINE_SECONDS = 10.0
+QUALITY_MULTIPLIER = 6.0
 
 # TRCA filter bank (meegkit format), capped to stream.clean()'s 1-40 Hz band.
 FILTERBANK = [
@@ -50,9 +51,9 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
-# Head gestures (head.py). The gyro is 16-bit with no documented range, so an
-# absolute threshold is unpickable; this is a multiple of the sensor's own
-# resting jitter instead. Below ~4 is twitchy, above ~8 wants a deliberate
+# Head gestures (head.py). The SDK passes firmware float32 gyro values through;
+# documented rad/s units have not been verified on this hardware. Thresholds
+# remain relative to resting jitter. Below ~4 is twitchy, above ~8 wants a deliberate
 # swipe. Check it with `python stream.py --real`: a swipe's `gyro pk` should
 # clear the peaks between swipes by more than this factor.
 GESTURE_THRESHOLD = 6.0   # multiples of resting gyro noise, not a physical unit

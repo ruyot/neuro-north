@@ -23,10 +23,10 @@ AXIS_GESTURES = {
 # edited by hand, so catch a typo on import, not in the child process
 assert all(g in GESTURES for pair in AXIS_GESTURES.values() for g in pair)
 
-# The gyro is 16-bit with no documented range, so counts vs degrees/sec is not
-# knowable here - everything below is in multiples of the sensor's own resting
-# jitter instead. This floor stops a near-silent axis collapsing the threshold
-# onto one bit, and stops it being a zero divisor.
+# Firmware supplies float32 gyro readings without SDK scaling; the documented
+# rad/s units have not been verified on this firmware. Thresholds stay relative
+# to the sensor's resting jitter. This existing floor keeps a near-silent axis
+# from collapsing the threshold or becoming a zero divisor; it is not calibrated.
 NOISE_FLOOR = 2.0
 
 

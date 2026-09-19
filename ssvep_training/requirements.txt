@@ -1,6 +1,6 @@
-brainflow>=5.23
+brainflow==5.23.0
 numpy>=2.3
 python-dotenv>=1.0
 psychopy>=2026.2
-meegkit>=0.2
+meegkit==0.2.0
 matplotlib>=3.9

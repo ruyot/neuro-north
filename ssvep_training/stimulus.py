@@ -160,25 +160,53 @@ def wait_for_key(win: visual.Window, text: str, key: str = "space", name: str | 
 
 
 def wait_for_board(win: visual.Window, recorder, text: str) -> bool:
-    """Show a progress message until the board process is ready. False on failure/Escape."""
+    """After warning acknowledgement, validate refresh and request a visible baseline."""
+    if _escape_pressed():
+        return False
+    if recorder.failed.value or not recorder.is_alive():
+        show_message(win, "Board setup failed - see the terminal for details.")
+        return False
+    win.flip()  # clear the acknowledged warning before measuring nonflashing frames
+    measured_hz = win.getActualFrameRate(nIdentical=20, nMaxFrames=180, nWarmUpFrames=30)
+    if (measured_hz is None or not np.isfinite(measured_hz)
+            or abs(measured_hz - cfg.EXPECTED_REFRESH_HZ) > 1.0):
+        actual = "unavailable" if measured_hz is None else f"{measured_hz:g} Hz"
+        message = (f"Display refresh: {actual}. Expected {cfg.EXPECTED_REFRESH_HZ:g} +/- 1 Hz.\n\n"
+                   "Cannot start this SSVEP run.")
+        print(f"[screen] {message}")
+        show_message(win, message)
+        return False
+    win.refreshThreshold = 1.0 / measured_hz + 0.004
+    instruction = "Hold still with eyes open for 10 seconds. Keep your jaw relaxed."
     clock = core.Clock()
-    while not recorder.ready.is_set():
-        if recorder.failed.value or not recorder.is_alive():
-            show_message(win, "Board setup failed - see the terminal for details.")
-            core.wait(3)
-            return False
-        show_message(win, f"{text}\n\n{clock.getTime():.0f} s")
+    baseline_started = False
+    while True:
         if _escape_pressed():
             return False
-    return True
+        if recorder.failed.value or not recorder.is_alive():
+            show_message(win, "Board setup failed - see the terminal for details.")
+            return False
+        if not baseline_started:
+            if not recorder.configured.is_set():
+                show_message(win, f"{text}\n\n{clock.getTime():.0f} s")
+                continue
+            show_message(win, instruction)
+            if _escape_pressed():
+                return False
+            recorder.begin_baseline(measured_hz)
+            baseline_started = True
+        elif recorder.ready.is_set():
+            return True
+        else:
+            show_message(win, instruction)
 
 
 def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
               overlay=(), freqs=cfg.STIMULUS_FREQUENCIES) -> bool:
-    """One cue -> flicker -> rest trial. True to continue, False if Escape was pressed.
+    """One cue -> flicker -> rest trial. False on Escape or board failure.
 
-    target_idx  : square to cue (0..3), or -1 for no cue (live typing)
-    marker_code : stamped into the EEG at flicker onset (session.encode_marker / LIVE_MARKER)
+    target_idx  : square to cue, or -1 for no cue
+    marker_code : calibration marker stamped at onset (session.encode_marker)
     overlay     : extra static stimuli (letter labels, typed text) drawn every frame
     """
     clock = core.Clock()
@@ -189,6 +217,8 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
     if 0 <= target_idx < len(cues):
         clock.reset()
         while clock.getTime() < cfg.CUE_DURATION:
+            if recorder.failed.value or not recorder.is_alive():
+                return False
             _draw_blank(squares, overlay)
             cues[target_idx].draw()
             win.flip()
@@ -202,16 +232,17 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
     win.recordFrameIntervals = True
     gc.disable()
     try:
-        marked = False
+        trial_id = None
         clock.reset()
         while clock.getTime() < cfg.FLICKER_DURATION:
+            if recorder.failed.value or not recorder.is_alive():
+                return False
             _flicker_frame(squares, freqs, clock.getTime())
             for stim in overlay:
                 stim.draw()
             win.flip()
-            if not marked:                    # first flicker frame is now on screen
-                recorder.mark_onset(marker_code)
-                marked = True
+            if trial_id is None:             # first flicker frame is now on screen
+                trial_id = recorder.mark_onset(marker_code)
             if _escape_pressed():
                 print("[trial] Escape during flicker")
                 return False
@@ -219,13 +250,24 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
         gc.enable()
         win.recordFrameIntervals = False
     dropped = win.nDroppedFrames - dropped_before
+    if trial_id is None or recorder.failed.value or not recorder.is_alive():
+        return False
+    recorder.finish_trial(trial_id, dropped)
     if dropped:
-        print(f"[warn] {dropped} late frame(s) during flicker - timing slipped slightly this trial")
+        print(f"[warn] {dropped} late frame(s) during flicker - trial rejected for timing")
 
     # --- REST ------------------------------------------------------------ #
     _draw_blank(squares, overlay)
     win.flip()
-    core.wait(cfg.INTER_TRIAL_INTERVAL)
+    clock.reset()
+    while clock.getTime() < cfg.INTER_TRIAL_INTERVAL:
+        if recorder.failed.value or not recorder.is_alive():
+            return False
+        if _escape_pressed():
+            print("[trial] Escape during rest")
+            return False
+        _draw_blank(squares, overlay)
+        win.flip()
     return True
 
 

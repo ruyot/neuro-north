@@ -34,7 +34,6 @@ RESET_WHEEL_AFTER_PICK = True   # back to a-f / g-l after every pick and space
 # Same selection timing as typer.py.
 SELECTION_WINDOW = 1.8
 FEEDBACK_SECONDS = 0.45  
-PREDICTION_TIMEOUT = 4.0   
 FLASH_SECONDS = 0.3        
 MAX_TYPED_CHARS = 26       
 
@@ -371,7 +370,7 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
     from .stimulus import flicker_frame
 
     clock = core.Clock()
-    state, t_mark, t_req, t_fb, seen, actions_at_mark = "mark", 0.0, 0.0, 0.0, 0, 0
+    state, t_mark, t_fb, trial_id, actions_at_mark = "mark", 0.0, 0.0, 0, 0
     # not 0: anything detected while the board warmed up must not fire on open
     seen_gesture = recorder.gesture_count.value
     phase0 = 0.0                # flicker time origin, re-anchored at each marker (see typer.py)
@@ -380,10 +379,12 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
     win.recordFrameIntervals = True
     try:
         while True:
+            if recorder.failed.value or not recorder.is_alive():
+                print("[error] Board worker failed or stopped; ending live selection.")
+                return
             t = clock.getTime()
             if state == "mark":
                 phase0 = t
-                seen = recorder.prediction_count.value
                 actions_at_mark = ui.action_count
                 dropped_at_mark = win.nDroppedFrames
                 marking = True
@@ -400,8 +401,12 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
             ui.draw()
             win.flip()
 
+            if recorder.failed.value or not recorder.is_alive():
+                print("[error] Board worker failed or stopped; ending live selection.")
+                return
+
             if marking:                      # first flicker frame is now on screen
-                recorder.mark_onset(cfg.LIVE_MARKER)
+                trial_id = recorder.mark_onset()
                 marking = False
 
             if not handle_keys(ui, boxes=False):
@@ -416,21 +421,23 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
                     late = win.nDroppedFrames - dropped_at_mark
                     if late:
                         print(f"[warn] {late} late frame(s) in this selection - flicker timing slipped")
-                    recorder.request_prediction()
-                    t_req, state = t, "waiting"
+                    recorder.finish_trial(trial_id, late)
+                    recorder.request_prediction(trial_id)
+                    state = "waiting"
             elif state == "waiting":
-                # Wait for this prediction even if it'll be dropped, so it can't be
-                # mistaken for the next selection's.
-                if recorder.prediction_count.value != seen:
-                    if ui.action_count != actions_at_mark:
+                result = recorder.poll_prediction(trial_id)
+                if result is not None:
+                    choice, quality = result
+                    if choice is None:
+                        print(f"[quality] selection rejected: {quality.name}. Recovery needs "
+                              f"{cfg.FILTER_HISTORY:g} seconds of clean history.")
+                        state = "mark"
+                    elif ui.action_count != actions_at_mark:
                         print("[ui] action during the selection - pick dropped")
                         state = "mark"
                     else:
-                        ui.select_box(recorder.last_prediction.value)
+                        ui.select_box(choice)
                         t_fb, state = t, "feedback"
-                elif t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive():
-                    print("[warn] no prediction for this selection - trying again")
-                    state = "mark"
             elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
                 state = "mark"
     finally:
@@ -471,14 +478,15 @@ def main() -> None:
             channels = json.load(f)["eeg_rows"]
         print(f"Training on {session}  (channels {channels})")
         recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
-        recorder.start()
-
-    from psychopy import core
-    from .stimulus import build_stimuli, build_window, wait_for_board, wait_for_key
-
-    win = build_window(fullscreen=not args.windowed)
     ui = None
+    win = core = None
     try:
+        if recorder:
+            recorder.start()
+        from psychopy import core
+        from .stimulus import build_stimuli, build_window, wait_for_board, wait_for_key
+
+        win = build_window(fullscreen=not args.windowed)
         if recorder:
             if not wait_for_key(win, f"This screen FLASHES at {min(cfg.STIMULUS_FREQUENCIES):g}-"
                                      f"{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\nDo not use it if you have "
@@ -504,11 +512,16 @@ def main() -> None:
     finally:
         if recorder:
             recorder.stop()
-            recorder.join(timeout=10)
-        win.close()
+        try:
+            if win is not None:
+                win.close()
+        finally:
+            if recorder is not None and recorder.pid is not None:
+                recorder.join()
         if ui and ui.items:
             print(f"\nTyped: {ui.text!r}")
-        core.quit()
+        if core is not None and sys.exc_info()[0] is None:
+            core.quit()
 
 
 if __name__ == "__main__":

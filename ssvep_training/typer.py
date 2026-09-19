@@ -41,7 +41,6 @@ from .session import latest_session
 # invisible at 15-20 Hz.
 SELECTION_WINDOW = 1.8     # s of flicker after the marker before classifying
 FEEDBACK_SECONDS = 0.45    # green outline on the chosen square (flicker continues)
-PREDICTION_TIMEOUT = 4.0   # s to wait for the board process before giving up
 
 
 def main() -> None:
@@ -74,14 +73,14 @@ def main() -> None:
         channels = json.load(f)["eeg_rows"]
     print(f"Training on {session}  (channels {channels})")
     recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
-    recorder.start()
-
-    from psychopy import core, event, visual
-    from .stimulus import build_stimuli, build_window, flicker_frame, wait_for_board, wait_for_key
-
-    win = build_window(fullscreen=not args.windowed)
     typed, picks, started = "", [], None
+    win = core = None
     try:
+        recorder.start()
+        from psychopy import core, event, visual
+        from .stimulus import build_stimuli, build_window, flicker_frame, wait_for_board, wait_for_key
+
+        win = build_window(fullscreen=not args.windowed)
         if not wait_for_key(win, f"This screen FLASHES at {min(cfg.STIMULUS_FREQUENCIES):g}-"
                                  f"{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\nDo not use it if you have "
                                  "epilepsy or have ever had a seizure.\n\nPress SPACE to continue."):
@@ -113,55 +112,73 @@ def main() -> None:
         overlay = [*labels, line_prompt, line_typed]
         clock = core.Clock()
         started = time.time()
-        state, t_mark, t_req, t_fb, seen, choice = "mark", 0.0, 0.0, 0.0, 0, -1
+        state, t_mark, t_fb, choice = "mark", 0.0, 0.0, -1
+        trial_id, dropped_at_mark = 0, 0
         phase0 = 0.0                # flicker time origin, re-anchored at each marker
 
         marking = False
-        while prompt is None or len(typed) < len(prompt):
-            t = clock.getTime()
-            # Decide BEFORE drawing, so the phase-0 frame is the one that reaches
-            # the screen and the marker goes in immediately after it -- the same
-            # order calibration uses (clock.reset -> draw -> flip -> mark_onset).
-            if state == "mark":
-                phase0 = t
-                seen = recorder.prediction_count.value
-                marking = True
-                t_mark, state = t, "collecting"
+        try:
+            win.recordFrameIntervals = True
+            while prompt is None or len(typed) < len(prompt):
+                if recorder.failed.value or not recorder.is_alive():
+                    print("[error] Board worker failed or stopped; ending live selection.")
+                    break
+                t = clock.getTime()
+                # Decide BEFORE drawing, so the phase-0 frame is the one that reaches
+                # the screen and the marker goes in immediately after it -- the same
+                # order calibration uses (clock.reset -> draw -> flip -> mark_onset).
+                if state == "mark":
+                    phase0 = t
+                    dropped_at_mark = win.nDroppedFrames
+                    marking = True
+                    t_mark, state = t, "collecting"
 
-            flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
-            for stim in overlay:
-                stim.draw()
-            if state == "feedback" and 0 <= choice < len(cues):
-                cues[choice].draw()
-            win.flip()
+                flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
+                for stim in overlay:
+                    stim.draw()
+                if state == "feedback" and 0 <= choice < len(cues):
+                    cues[choice].draw()
+                win.flip()
 
-            if marking:                      # first flicker frame is now on screen
-                recorder.mark_onset(cfg.LIVE_MARKER)
-                marking = False
+                if recorder.failed.value or not recorder.is_alive():
+                    print("[error] Board worker failed or stopped; ending live selection.")
+                    break
+                if marking:                      # first flicker frame is now on screen
+                    trial_id = recorder.mark_onset()
+                    marking = False
 
-            keys = event.getKeys(keyList=["escape", "backspace"])
-            if "escape" in keys:
-                break
-            if "backspace" in keys and prompt is None and typed:
-                typed = typed[:-1]
-                redraw_text()
-
-            if state == "collecting" and t - t_mark >= SELECTION_WINDOW:
-                recorder.request_prediction()
-                t_req, state = t, "waiting"
-            elif state == "waiting":
-                if recorder.prediction_count.value != seen:
-                    choice = recorder.last_prediction.value
-                    typed += letters[choice]
-                    picks.append((letters[choice], round(time.time() - started, 2)))
-                    print(f"[typed] {letters[choice]}  ->  {typed}")
+                keys = event.getKeys(keyList=["escape", "backspace"])
+                if "escape" in keys:
+                    break
+                if "backspace" in keys and prompt is None and typed:
+                    typed = typed[:-1]
                     redraw_text()
-                    t_fb, state = t, "feedback"
-                elif t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive():
-                    print("[warn] no prediction for this selection - trying again")
+
+                if state == "collecting" and t - t_mark >= SELECTION_WINDOW:
+                    late = win.nDroppedFrames - dropped_at_mark
+                    if late:
+                        print(f"[warn] {late} late frame(s) in this selection - flicker timing slipped")
+                    recorder.finish_trial(trial_id, late)
+                    recorder.request_prediction(trial_id)
+                    state = "waiting"
+                elif state == "waiting":
+                    result = recorder.poll_prediction(trial_id)
+                    if result is not None:
+                        choice, quality = result
+                        if choice is None:
+                            print(f"[quality] selection rejected: {quality.name}. Recovery needs "
+                                  f"{cfg.FILTER_HISTORY:g} seconds of clean history.")
+                            state = "mark"
+                        else:
+                            typed += letters[choice]
+                            picks.append((letters[choice], round(time.time() - started, 2)))
+                            print(f"[typed] {letters[choice]}  ->  {typed}")
+                            redraw_text()
+                            t_fb, state = t, "feedback"
+                elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
                     state = "mark"
-            elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
-                state = "mark"
+        finally:
+            win.recordFrameIntervals = False
 
         if prompt and len(typed) == len(prompt):
             summary = report(prompt, typed, time.time() - started, picks)
@@ -170,11 +187,16 @@ def main() -> None:
         print("Stopped: Ctrl+C in the terminal.")
     finally:
         recorder.stop()
-        recorder.join(timeout=10)
-        win.close()
+        try:
+            if win is not None:
+                win.close()
+        finally:
+            if recorder.pid is not None:
+                recorder.join()
         if typed:
             print(f"\nTyped: {typed}")
-        core.quit()
+        if core is not None and sys.exc_info()[0] is None:
+            core.quit()
 
 
 def report(target: str, typed: str, elapsed: float, picks) -> str:

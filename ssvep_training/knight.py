@@ -14,6 +14,8 @@ except ModuleNotFoundError:
         raise ModuleNotFoundError("needs stream.py") from None
     import stream
 
+validate_eeg_channels = stream.validate_eeg_channels
+validate_knight_descriptor = stream.validate_knight_descriptor
 enable_eeg_channels = stream.enable_eeg_channels
 clean = stream.clean
 leadoff = stream.leadoff
@@ -24,3 +26,4 @@ LOFF_N = stream.LOFF_N
 ACCEL = stream.ACCEL
 GYRO = stream.GYRO
 MAG = stream.MAG
+MAINS_HZ = stream.MAINS_HZ
