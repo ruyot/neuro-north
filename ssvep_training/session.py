@@ -57,10 +57,12 @@ def load_session(path: str) -> tuple[np.ndarray, dict]:
     return np.load(os.path.join(path, "raw.npz"))["data"], meta
 
 
-def latest_session() -> str | None:
+def latest_session(directory: str | None = None, prefix: str = "session_") -> str | None:
     """Newest session folder in training_data/ with at least one trial. Sessions
-    aborted before the first trial are skipped, not deleted."""
-    for path in sorted(glob.glob(os.path.join(cfg.TRAINING_DATA_DIR, "session_*")), reverse=True):
+    aborted before the first trial are skipped, not deleted. Other paradigms pass
+    their own directory and folder prefix."""
+    for path in sorted(glob.glob(os.path.join(directory or cfg.TRAINING_DATA_DIR, f"{prefix}*")),
+                       reverse=True):
         info = os.path.join(path, "session.json")
         if not (os.path.exists(info) and os.path.exists(os.path.join(path, "raw.npz"))):
             continue

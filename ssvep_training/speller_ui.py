@@ -79,6 +79,9 @@ class SpellerUI:
     """Screen state + drawing. Draws everything except the flicker squares,
     so draw() can go on top of any flicker frame."""
 
+    # What the timing bar calls each phase. Motor imagery says imagine / relax.
+    PROGRESS_LABELS = {"go": "look", "break": "next"}
+
     def __init__(self, win, cues, autocomplete=None):
         """cues: the outline per box from stimulus.build_stimuli(), used for pick feedback.
         autocomplete: a ready AutocompleteProcess, or None for blank suggestions."""
@@ -263,7 +266,7 @@ class SpellerUI:
     def _draw_progress(self, phase: str, fraction: float) -> None:
         if phase != self._bar_phase:        # colour + label only change between phases
             self.bar_fill.fillColor = ACCENT if phase == "go" else FAINT
-            _set_text(self.bar_label, "look" if phase == "go" else "next")
+            _set_text(self.bar_label, self.PROGRESS_LABELS[phase])
             self._bar_phase = phase
         self.bar_track.draw()
         if fraction > 0:

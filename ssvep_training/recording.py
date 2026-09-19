@@ -71,8 +71,7 @@ class RecordingProcess(Process):
 
         from . import config as cfg
         from .board import SETTLE_SECONDS, close_board, open_board
-        from .session import epoch_at, flicker_samples, history_samples, save_session, session_meta
-        from .trca_model import decide, scores
+        from .session import save_session
 
         board = None
         try:
@@ -94,7 +93,7 @@ class RecordingProcess(Process):
                 close_board(board)
             return
 
-        meta = session_meta(board)
+        meta = self._meta(board)
         chunks = []
 
         recorded = 0
@@ -110,29 +109,11 @@ class RecordingProcess(Process):
             if self.session_dir and chunks:
                 save_session(self.session_dir, np.hstack(chunks), {**meta, "n_markers": seen_onset})
 
-        need = history_samples(board.rate) + flicker_samples(board.rate)
-
         def predict() -> bool:
             """Classify the latest live trial if its data has all arrived. True when done."""
-            recent, n = [], 0
-            for chunk in reversed(chunks):            # just enough recent data
-                recent.append(chunk)
-                n += chunk.shape[1]
-                if n >= need + 2 * board.rate:
-                    break
-            if not recent:
+            choice = self._predict(model, chunks, board)
+            if choice is None:
                 return False
-            data = np.hstack(recent[::-1])
-            onsets = np.flatnonzero(data[board.marker_row] == cfg.LIVE_MARKER)
-            if not len(onsets):
-                return False
-            epoch = epoch_at(data[board.eeg_rows], int(onsets[-1]), board.rate)
-            if epoch is None:                          # flicker data not all here yet
-                return False
-            trial_scores = scores(model, epoch[:, :, None])[0]
-            choice = decide(trial_scores, self._threshold)
-            print("[predict] scores " + " / ".join(f"{s:.3f}" for s in trial_scores)
-                  + (" -> neither" if choice < 0 else f" -> {cfg.TARGET_LETTERS[choice]}"))
             self.last_prediction.value = choice
             with self.prediction_count.get_lock():
                 self.prediction_count.value += 1
@@ -187,6 +168,46 @@ class RecordingProcess(Process):
             self.failed.value = True
         finally:
             close_board(board)
+
+    # --- paradigm hooks: a subclass swaps these three to decode something else --- #
+
+    def _meta(self, board) -> dict:
+        """What goes in session.json beside the recording."""
+        from .session import session_meta
+
+        return session_meta(board)
+
+    def _predict(self, model, chunks, board) -> int | None:
+        """Classify the latest live trial: target index, -1 for "neither", or
+        None while its data is still arriving. `chunks` is every drained chunk
+        so far, oldest first."""
+        import numpy as np
+
+        from . import config as cfg
+        from .session import epoch_at, flicker_samples, history_samples
+        from .trca_model import decide, scores
+
+        need = history_samples(board.rate) + flicker_samples(board.rate)
+        recent, n = [], 0
+        for chunk in reversed(chunks):            # just enough recent data
+            recent.append(chunk)
+            n += chunk.shape[1]
+            if n >= need + 2 * board.rate:
+                break
+        if not recent:
+            return None
+        data = np.hstack(recent[::-1])
+        onsets = np.flatnonzero(data[board.marker_row] == cfg.LIVE_MARKER)
+        if not len(onsets):
+            return None
+        epoch = epoch_at(data[board.eeg_rows], int(onsets[-1]), board.rate)
+        if epoch is None:                          # flicker data not all here yet
+            return None
+        trial_scores = scores(model, epoch[:, :, None])[0]
+        choice = decide(trial_scores, self._threshold)
+        print("[predict] scores " + " / ".join(f"{s:.3f}" for s in trial_scores)
+              + (" -> neither" if choice < 0 else f" -> {cfg.TARGET_LETTERS[choice]}"))
+        return choice
 
     def _train_model(self):
         """Fit TRCA on the calibration session; its targets must match today's config."""
