@@ -23,6 +23,8 @@ A trial has three phases:
 
 from __future__ import annotations
 
+import gc
+
 import numpy as np
 from psychopy import core, event, visual
 
@@ -47,9 +49,11 @@ def build_window() -> visual.Window:
         units="norm",
         allowGUI=False,
     )
-    # Count frames that take noticeably longer than one refresh.
+    # Count frames that take noticeably longer than one refresh. Recording is
+    # switched on only during the flicker (see run_trial), as PsychoPy advises:
+    # pauses like the inter-trial rest would otherwise count as dropped frames.
     win.refreshThreshold = 1 / cfg.EXPECTED_REFRESH_HZ + 0.004
-    win.recordFrameIntervals = True
+    win.recordFrameIntervals = False
     return win
 
 
@@ -75,9 +79,22 @@ def build_stimuli(win: visual.Window):
     return squares, cues, labels
 
 
+_message_stims = {}
+
+
 def show_message(win: visual.Window, text: str) -> None:
-    """Draw a centred one-off message (e.g. 'Setting up board...')."""
-    visual.TextStim(win, text=text, pos=(0, 0), color="white", height=0.08, wrapWidth=1.8).draw()
+    """Draw a centred message (e.g. 'Setting up board...').
+
+    Reuses one TextStim per window and only re-renders when the text changes:
+    building a new TextStim every frame is slow enough to drop frames.
+    """
+    stim = _message_stims.get(id(win))
+    if stim is None:
+        stim = _message_stims[id(win)] = visual.TextStim(
+            win, text=text, pos=(0, 0), color="white", height=0.08, wrapWidth=1.8)
+    if stim.text != text:
+        stim.text = text
+    stim.draw()
     win.flip()
 
 
@@ -148,19 +165,26 @@ def run_trial(win, squares, cues, target_idx, recording_process,
                 return False
 
     # --- Phase 2: FLICKER ------------------------------------------------ #
+    # Garbage collection is paused so a collection can't stall a frame.
     dropped_before = win.nDroppedFrames
-    clock.reset()
-    while clock.getTime() < cfg.FLICKER_DURATION:
-        t = clock.getTime()
-        _flicker_frame(squares, freqs, t)
-        for stim in overlay:
-            stim.draw()
-        win.flip()
-        if _escape_pressed():
-            return False
+    win.recordFrameIntervals = True
+    gc.disable()
+    try:
+        clock.reset()
+        while clock.getTime() < cfg.FLICKER_DURATION:
+            t = clock.getTime()
+            _flicker_frame(squares, freqs, t)
+            for stim in overlay:
+                stim.draw()
+            win.flip()
+            if _escape_pressed():
+                return False
+    finally:
+        gc.enable()
+        win.recordFrameIntervals = False
     dropped = win.nDroppedFrames - dropped_before
     if dropped:
-        print(f"[warn] {dropped} dropped frame(s) during flicker - flicker frequency was off this trial")
+        print(f"[warn] {dropped} late frame(s) during flicker - timing slipped slightly this trial")
 
     # --- Phase 3: CAPTURE ------------------------------------------------ #
     # Blank the squares and raise the flag. The rising edge makes the child

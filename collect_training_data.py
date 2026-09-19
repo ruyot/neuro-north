@@ -87,6 +87,8 @@ def main() -> None:
         if completed:
             print(f"\nSaved {completed} complete block(s) to {session_dir}")
             print("Next: python evaluate_trca.py")
+        elif os.path.isdir(session_dir) and not os.listdir(session_dir):
+            os.rmdir(session_dir)  # aborted before any trial was saved
         core.quit()
 
 

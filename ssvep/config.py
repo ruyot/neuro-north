@@ -108,6 +108,12 @@ RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
 
 def latest_session_dir() -> str | None:
-    """Most recent training_data/session_* folder, or None if there isn't one."""
+    """Most recent training_data/session_* folder with at least one complete block, or None.
+
+    Aborted runs can leave empty or partial session folders; those are skipped.
+    """
     sessions = sorted(glob.glob(os.path.join(TRAINING_DATA_DIR, "session_*")))
-    return sessions[-1] if sessions else None
+    for session in reversed(sessions):
+        if all(os.path.exists(os.path.join(session, f"block_1_{t}.csv")) for t in range(1, N_TARGETS + 1)):
+            return session
+    return None
