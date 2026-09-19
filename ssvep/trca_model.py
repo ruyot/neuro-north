@@ -124,7 +124,9 @@ def cross_validate(data_dir: str | None = None,
     eeg, labels = load_training_data(data_dir, n_blocks)
 
     n_targets = cfg.N_TARGETS
-    selection_time = cfg.GAZE_DURATION + cfg.INTER_TRIAL_INTERVAL
+    # One selection costs a whole trial cycle (the user stares for the full
+    # flicker, then rests), not just the 1 s analysis window.
+    selection_time = cfg.FLICKER_DURATION + cfg.INTER_TRIAL_INTERVAL
     ci = 100 * (1 - alpha_ci)
 
     model = build_model()
@@ -152,8 +154,9 @@ def cross_validate(data_dir: str | None = None,
         itrs[i] = itr(n_targets, correct, selection_time) if correct > 1 / n_targets else 0.0
         print(f"  Block {i + 1}: accuracy = {accs[i]:5.1f}%   ITR = {itrs[i]:5.1f} bits/min")
 
-    mu_acc, _, ci_acc, _ = normfit(accs, alpha_ci)
-    mu_itr, _, ci_itr, _ = normfit(itrs, alpha_ci)
+    # meegkit's normfit takes the confidence *level* (0.95), not alpha (0.05).
+    mu_acc, _, ci_acc, _ = normfit(accs, 1 - alpha_ci)
+    mu_itr, _, ci_itr, _ = normfit(itrs, 1 - alpha_ci)
     print(f"\nMean accuracy = {mu_acc:.1f}%  "
           f"({ci:.0f}% CI: {ci_acc[0]:.1f}-{ci_acc[1]:.1f}%)   chance = {100 / n_targets:.0f}%")
     print(f"Mean ITR      = {mu_itr:.1f} bits/min  "

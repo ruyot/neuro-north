@@ -44,7 +44,9 @@ def build_window() -> visual.Window:
         fullscr=cfg.FULLSCREEN,
         screen=cfg.STIMULUS_SCREEN,
         winType="pyglet",
-        color=[0, 0, 0],
+        # PsychoPy "rgb" runs -1..1, so [0, 0, 0] would be mid-grey. Black
+        # maximises contrast with the white flicker for a stronger SSVEP.
+        color=[-1, -1, -1],
         colorSpace="rgb",
         units="norm",
         allowGUI=False,
@@ -73,7 +75,7 @@ def build_stimuli(win: visual.Window):
         ))
         # Letter sits outside the square (above top row, below bottom row) so it
         # doesn't change the square's brightness.
-        label_y = pos[1] + np.sign(pos[1]) * (_SIZE[1] / 2 + 0.08)
+        label_y = pos[1] + np.sign(pos[1]) * (_SIZE[1] / 2 + 0.13)  # clears the cue outline
         labels.append(visual.TextStim(win, text=letter, pos=(pos[0], label_y),
                                       color="gray", height=0.1, bold=True))
     return squares, cues, labels

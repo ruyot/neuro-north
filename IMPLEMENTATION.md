@@ -57,6 +57,10 @@ Based on NeuroPawn's SSVEP + TRCA pipeline, adapted for the Knight IMU on macOS.
 
 Newest first. Record findings, numbers, and gotchas here.
 
+### 2026-09-19 (bug fixes from `ssvep-knight-validation`)
+- Ported three fixes found by Abdullah on his parallel branch: `normfit` was given alpha instead of the confidence level (every "95% CI" was a 5% CI); ITR used the 1 s analysis window instead of the real 2 s per selection (overstated bits/min); window background `[0,0,0]` is mid-grey in PsychoPy rgb → now black.
+- Letter labels moved out so they no longer touch the cue outline.
+
 ### 2026-09-19 (later)
 - Switched base design to NeuroPawn's SSVEP + TRCA pipeline (built for the Knight board): 4 corner targets at 6.67 / 8.57 / 10 / 12 Hz, 1.5 s flicker, occipital montage. WATOLINK kept for later speller ideas only.
 - Moved to Python 3.12 (NeuroPawn's deps need numpy ≥ 2.x, pandas 3).
