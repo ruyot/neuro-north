@@ -21,6 +21,25 @@ the clicked target. Values below 50% intentionally simulate a classifier error.
 The server uses `wordfreq` to load 50,000 frequency-ranked, lowercase ASCII
 English words. It remains independent of the EEG collection process.
 
+Enter the other speaker's question in **Question or conversation context** and
+select **Apply context**. The text is prepended to the language-model prompt but
+is not added to the decoded sentence. It remains active across session resets;
+clearing the field and applying it removes the context. Applying new context
+commits any tentative beam first.
+
+### Search and decode modes
+
+The **Search / decode** selector controls when decoded words become final:
+
+- **Greedy** commits each selected word immediately.
+- **One-word fixed-lag beam** keeps eight alternatives and commits a word after
+  one later word supplies additional context.
+- **Sentence beam** keeps the full sentence tentative until **Finish sentence**
+  is selected.
+
+Tentative words appear in amber. **Finish sentence** commits the highest-scoring
+beam; changing the engine or decode mode also commits that beam first.
+
 ## Context model experiments
 
 The causal-model bakeoff uses a separate Python 3.10 environment because the

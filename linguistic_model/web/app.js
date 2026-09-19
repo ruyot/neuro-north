@@ -14,6 +14,10 @@ const topControl = document.querySelector("#candidate-top");
 const bottomControl = document.querySelector("#candidate-bottom");
 const toast = document.querySelector("#toast");
 const completionEngine = document.querySelector("#completion-engine");
+const decodeMode = document.querySelector("#decode-mode");
+const finishSentence = document.querySelector("#finish");
+const contextForm = document.querySelector("#context-form");
+const contextInput = document.querySelector("#context-prefix");
 
 let state = null;
 let busy = false;
@@ -52,6 +56,8 @@ async function act(action, payload = {}) {
     showError(error.message);
     if (state) {
       completionEngine.value = state.engine;
+      decodeMode.value = state.decode_mode;
+      contextInput.value = state.context_prefix;
       status.textContent = state.last_event;
     }
   } finally {
@@ -60,15 +66,32 @@ async function act(action, payload = {}) {
   }
 }
 
+function renderContext() {
+  if (document.activeElement !== contextInput) {
+    contextInput.value = state.context_prefix;
+  }
+}
+
 function renderSentence() {
   sentence.replaceChildren();
   if (!state.sentence) {
     const empty = document.createElement("span");
     empty.className = "placeholder";
-    empty.textContent = "No words confirmed yet";
+    empty.textContent = "No words decoded yet";
     sentence.append(empty);
   } else {
-    sentence.textContent = state.sentence;
+    if (state.confirmed_words.length) {
+      const confirmed = document.createElement("span");
+      confirmed.textContent = state.confirmed_words.join(" ");
+      sentence.append(confirmed);
+    }
+    if (state.tentative_words.length) {
+      const tentative = document.createElement("span");
+      tentative.className = "tentative-words";
+      tentative.textContent = `${state.confirmed_words.length ? " " : ""}${state.tentative_words.join(" ")}`;
+      tentative.title = "Tentative words may change as more context arrives";
+      sentence.append(tentative);
+    }
   }
   status.textContent = state.last_event;
 }
@@ -130,6 +153,19 @@ function renderEngine() {
   });
   completionEngine.value = state.engine;
   completionEngine.disabled = false;
+}
+
+function renderDecodeMode() {
+  decodeMode.replaceChildren();
+  state.decode_modes.forEach((mode) => {
+    const option = document.createElement("option");
+    option.value = mode.id;
+    option.textContent = mode.label;
+    decodeMode.append(option);
+  });
+  decodeMode.value = state.decode_mode;
+  decodeMode.disabled = false;
+  finishSentence.disabled = !state.can_finish;
 }
 
 function renderCandidates() {
@@ -208,9 +244,11 @@ function renderTrace() {
 }
 
 function render() {
+  renderContext();
   renderSentence();
   renderTargets();
   renderEngine();
+  renderDecodeMode();
   renderCandidates();
   renderTrace();
 }
@@ -227,6 +265,17 @@ completionEngine.addEventListener("change", () => {
   const option = completionEngine.selectedOptions[0];
   status.textContent = `Loading ${option.textContent} completion engine…`;
   act("engine", { engine: completionEngine.value });
+});
+decodeMode.addEventListener("change", () => {
+  const option = decodeMode.selectedOptions[0];
+  status.textContent = `Switching to ${option.textContent}…`;
+  act("decode", { mode: decodeMode.value });
+});
+finishSentence.addEventListener("click", () => act("finish"));
+contextForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  status.textContent = "Applying conversation context…";
+  act("context", { context: contextInput.value });
 });
 
 document.addEventListener("keydown", (event) => {

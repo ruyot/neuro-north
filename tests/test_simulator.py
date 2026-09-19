@@ -12,6 +12,35 @@ class PreferredWordScorer:
             for candidate in candidates
         }
 
+class ContextualBeamScorer:
+    def score(self, context, candidates):
+        prefix = tuple(context)
+        scores = {candidate: -100.0 for candidate in candidates}
+        if prefix == ("hi",):
+            if "int" in scores:
+                scores["int"] = 10.0
+            if "how" in scores:
+                scores["how"] = 9.0
+        elif prefix == ("hi", "how") and "are" in scores:
+            scores["are"] = 10.0
+        elif prefix == ("hi", "int") and "are" in scores:
+            scores["are"] = 0.0
+        else:
+            for candidate in candidates:
+                scores[candidate] = 0.0
+        return scores
+class RecordingScorer:
+    def __init__(self):
+        self.contexts = []
+
+    def score(self, context, candidates):
+        self.contexts.append(tuple(context))
+        return {candidate: 0.0 for candidate in candidates}
+
+
+
+
+
 
 
 
@@ -21,6 +50,7 @@ class PipelineSimulatorTests(unittest.TestCase):
 
     def test_initial_state_exposes_first_page_and_next_word_predictions(self):
         state = self.simulator.state()
+        self.assertEqual("", state["context_prefix"])
 
         self.assertEqual(["A-F", "G-L"], [target["range"] for target in state["targets"]])
         self.assertEqual([15, 20], [target["frequency"] for target in state["targets"]])
@@ -140,6 +170,108 @@ class PipelineSimulatorTests(unittest.TestCase):
         with self.assertRaisesRegex(DecoderError, "unknown completion engine"):
             self.simulator.set_engine("unknown")
         self.assertEqual("bigram", self.simulator.state()["engine"])
+
+    def _accept_hi(self):
+        self.simulator.select_range("G-L", 0.9)
+        self.simulator.select_range("G-L", 0.9)
+        self.simulator.accept("hi")
+
+    def _enter_how_ranges(self):
+        self.simulator.select_range("G-L", 0.9)
+        self.simulator.next_page()
+        self.simulator.select_range("M-R", 0.9)
+        self.simulator.select_range("S-Z", 0.9)
+
+    def _configure_contextual_beam(self, mode):
+        self.simulator._scorers["gpt2"] = ContextualBeamScorer()
+        self.simulator.set_engine("gpt2")
+        self.simulator.set_decode_mode(mode)
+
+    def test_fixed_lag_beam_revises_previous_word_from_later_context(self):
+        self._configure_contextual_beam("fixed-lag")
+        self._accept_hi()
+        self._enter_how_ranges()
+        self.simulator.boundary()
+
+        state = self.simulator.state()
+        self.assertEqual(["hi"], state["confirmed_words"])
+        self.assertEqual(["int"], state["tentative_words"])
+        self.assertGreater(state["beam_count"], 1)
+
+        self.simulator.next_page()
+        self.simulator.select_range("A-F", 0.9)
+        self.simulator.accept("are")
+
+        state = self.simulator.state()
+        self.assertEqual(["hi", "how"], state["confirmed_words"])
+        self.assertEqual(["are"], state["tentative_words"])
+
+    def test_sentence_beam_defers_all_words_until_finish(self):
+        self._configure_contextual_beam("sentence-beam")
+        self._accept_hi()
+        self._enter_how_ranges()
+        self.simulator.boundary()
+        self.simulator.next_page()
+        self.simulator.select_range("A-F", 0.9)
+        self.simulator.accept("are")
+
+        state = self.simulator.state()
+        self.assertEqual([], state["confirmed_words"])
+        self.assertEqual(["hi", "how", "are"], state["tentative_words"])
+        self.assertTrue(state["can_finish"])
+
+        self.simulator.finish_sentence()
+        state = self.simulator.state()
+        self.assertEqual(["hi", "how", "are"], state["confirmed_words"])
+        self.assertEqual([], state["tentative_words"])
+
+    def test_decode_mode_change_finalizes_tentative_words(self):
+        self.simulator.set_decode_mode("fixed-lag")
+        self.simulator.accept("the")
+
+        self.simulator.set_decode_mode("greedy")
+
+        state = self.simulator.state()
+        self.assertEqual(["the"], state["confirmed_words"])
+        self.assertEqual([], state["tentative_words"])
+        self.assertEqual("greedy", state["decode_mode"])
+    def test_conversation_context_changes_bigram_prediction(self):
+        self.assertEqual("the", self.simulator.state()["candidates"][0]["word"])
+
+        self.simulator.set_context_prefix("Hello, my")
+        state = self.simulator.state()
+
+        self.assertEqual("Hello, my", state["context_prefix"])
+        self.assertEqual("name", state["candidates"][0]["word"])
+
+    def test_causal_scorer_receives_question_before_decoded_words(self):
+        scorer = RecordingScorer()
+        self.simulator._scorers["gpt2"] = scorer
+        self.simulator.set_engine("gpt2")
+        self.simulator.set_context_prefix("What is your name?")
+
+        self.simulator.state()
+
+        self.assertEqual(("What is your name?",), scorer.contexts[-1])
+
+    def test_context_change_finalizes_pending_beam(self):
+        self.simulator.set_decode_mode("fixed-lag")
+        self.simulator.accept("the")
+
+        self.simulator.set_context_prefix("What comes next?")
+
+        state = self.simulator.state()
+        self.assertEqual(["the"], state["confirmed_words"])
+        self.assertEqual([], state["tentative_words"])
+
+    def test_conversation_context_length_is_bounded(self):
+        with self.assertRaisesRegex(DecoderError, "at most 500 characters"):
+            self.simulator.set_context_prefix("x" * 501)
+
+
+    def test_unknown_decode_mode_is_rejected(self):
+        with self.assertRaisesRegex(DecoderError, "unknown decode mode"):
+            self.simulator.set_decode_mode("unknown")
 
     def test_reset_restores_the_first_page_and_empty_session(self):
         self.simulator.next_page()

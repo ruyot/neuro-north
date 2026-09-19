@@ -273,7 +273,12 @@ class LinguisticDecoder:
         self.observations.append(observation)
         return observation
 
-    def candidates(self, limit: int = 5, completed_only: bool = False) -> CandidateSet:
+    def candidates(
+        self,
+        limit: int = 5,
+        completed_only: bool = False,
+        context: Optional[Sequence[str]] = None,
+    ) -> CandidateSet:
         if limit <= 0:
             raise DecoderError("candidate limit must be positive")
 
@@ -296,7 +301,10 @@ class LinguisticDecoder:
                 word = self.lexicon.words[word_id]
                 if completed_only and len(word) != observed_length:
                     continue
-                language = self.context_model.log_probability(word_id, self.confirmed_words)
+                language = self.context_model.log_probability(
+                    word_id,
+                    self.confirmed_words if context is None else context,
+                )
                 score = self.eeg_weight * evidence + self.language_weight * language
                 scored.append((word_id, score, evidence, language))
 

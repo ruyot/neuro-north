@@ -15,8 +15,21 @@
     </header>
 
     <section class="sentence-card" aria-labelledby="sentence-label">
-      <h2 id="sentence-label">Confirmed sentence</h2>
-      <div class="sentence" id="sentence"><span class="placeholder">No words confirmed yet</span></div>
+      <h2 id="sentence-label">Sentence</h2>
+      <form class="context-form" id="context-form">
+        <label for="context-prefix">Question or conversation context</label>
+        <div class="context-entry">
+          <input
+            id="context-prefix"
+            type="text"
+            maxlength="500"
+            placeholder="What would you like to eat?"
+            autocomplete="off"
+          >
+          <button class="quiet-button" type="submit">Apply context</button>
+        </div>
+      </form>
+      <div class="sentence" id="sentence"><span class="placeholder">No words decoded yet</span></div>
       <div class="live-status" id="status" aria-live="polite">Connecting…</div>
     </section>
 
@@ -61,6 +74,7 @@
         <div class="utility-row">
           <button class="utility" id="backspace" type="button">Undo last input</button>
           <button class="utility" id="clear" type="button">Clear current word</button>
+          <button class="utility" id="finish" type="button" disabled>Finish sentence</button>
           <span class="shortcut-note">Keys: 1 / 2 targets · ← page · → boundary · Backspace undo</span>
         </div>
       </div>
@@ -73,6 +87,10 @@
         <div class="engine-control">
           <label for="completion-engine">Completion engine</label>
           <select id="completion-engine" disabled aria-label="Completion engine"></select>
+        </div>
+        <div class="engine-control">
+          <label for="decode-mode">Search / decode</label>
+          <select id="decode-mode" disabled aria-label="Search and decode type"></select>
         </div>
 
 
