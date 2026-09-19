@@ -9,10 +9,15 @@ plain method, so the IMU layer only has to call it:
     ui.next_wheel()             left edge: a-f / g-l  <->  m-r / s-z
     ui.space()                  right edge
     ui.pick_suggestion(slot)    top (0) / bottom (1) edge: replace the current word
-    ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges (blank for now)
+    ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges
+
+Autocomplete (Mika's linguistic_model, GPT-2 by default) runs in its own
+process: every pick refreshes the two suggestions, and space swaps the word's
+[a-f] ranges for the best dictionary word that fits them.
 
     python -m ssvep_training.speller_ui           # headset + latest calibration
     python -m ssvep_training.speller_ui --keys    # no headset, no flicker: 1 / 2 pick a box
+    python -m ssvep_training.speller_ui --engine bigram   # faster, no GPT-2 (or none: off)
 """
 
 from __future__ import annotations
@@ -70,8 +75,9 @@ class SpellerUI:
     """Screen state + drawing. Draws everything except the flicker squares,
     so draw() can go on top of any flicker frame."""
 
-    def __init__(self, win, cues):
-        """cues: the outline per box from stimulus.build_stimuli(), used for pick feedback."""
+    def __init__(self, win, cues, autocomplete=None):
+        """cues: the outline per box from stimulus.build_stimuli(), used for pick feedback.
+        autocomplete: a ready AutocompleteProcess, or None for blank suggestions."""
         from psychopy import visual
 
         from .stimulus import layout
@@ -82,6 +88,9 @@ class SpellerUI:
         self.items: list[str] = []      # typed so far: a range ("abcdef"), a letter, or " "
         self.suggestions = ["", ""]     # top, bottom
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
+        self.autocomplete = autocomplete
+        self._last_request = 0          # only the newest request's suggestions get shown
+        self._decoding: dict[int, int] = {}   # space request id -> index of that word's first item
         self._flash_until: dict[str, float] = {}
         self._line_colors: dict[int, str] = {}
 
@@ -150,6 +159,8 @@ class SpellerUI:
         _set_text(self.picked_labels[i], _spaced(letters))
         self._flash(f"box{i}", FEEDBACK_SECONDS)
         self._changed(f"picked [{range_name(letters)}]")
+        if self.autocomplete:
+            self._last_request = self.autocomplete.pick(letters)
 
     def next_wheel(self) -> None:
         """Show the next pair of ranges in the boxes."""
@@ -158,6 +169,11 @@ class SpellerUI:
         self._changed("wheel -> " + " / ".join(range_name(r) for r in self.pages[self.page]))
 
     def space(self) -> None:
+        word = self.current_word()
+        if self.autocomplete and word:
+            self._last_request = self.autocomplete.space()
+            self._decoding[self._last_request] = len(self.items) - len(word)
+            self.suggestions = ["", ""]     # they were for the word just ended
         self.items.append(" ")
         if RESET_WHEEL_AFTER_PICK:
             self.page = 0
@@ -173,6 +189,9 @@ class SpellerUI:
         start = len(self.items) - len(self.current_word())
         self.items[start:] = [*word, " "]
         self.page = 0
+        if self.autocomplete:
+            self._last_request = self.autocomplete.accept(word)
+            self.suggestions = ["", ""]
         self._flash("top" if slot == 0 else "bottom")
         self._changed(f"suggestion {word!r}")
 
@@ -180,6 +199,26 @@ class SpellerUI:
         """Autocomplete hook: fill the top / bottom edges ("" = blank)."""
         self.suggestions = [top, bottom]
         self._refresh()
+
+    def poll(self) -> None:
+        """Apply autocomplete replies. Call once per frame; never blocks."""
+        if not self.autocomplete:
+            return
+        for reply in self.autocomplete.replies():
+            start = self._decoding.pop(reply["id"], None)
+            if reply["committed"] and start is not None:
+                self._resolve(start, reply["committed"])
+            if reply["id"] == self._last_request and reply["suggestions"] is not None:
+                self.set_suggestions(*(reply["suggestions"] + ["", ""])[:2])
+
+    def _resolve(self, start: int, word: str) -> None:
+        """Swap a finished word's ranges (from items[start]) for the decoded letters.
+        One range per letter, so nothing after it shifts."""
+        span = self.items[start:start + len(word)]
+        if len(span) == len(word) and all(len(r) > 1 and c in r for c, r in zip(word, span)):
+            self.items[start:start + len(word)] = list(word)
+            self._refresh()
+            print(f"[ui] {'decoded ' + repr(word):<24} ->  {self.text!r}")
 
     def current_word(self) -> list[str]:
         """Items since the last space, e.g. ["ghijkl", "ghijkl"] for "hi"."""
@@ -340,6 +379,7 @@ def run_keys(win, ui: SpellerUI, squares) -> None:
     win.recordFrameIntervals = True
     try:
         while handle_keys(ui, boxes=True):
+            ui.poll()
             for sq in squares:
                 sq.draw()
             ui.draw()
@@ -380,6 +420,7 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
             else:
                 ui.set_progress("break", 1.0)
 
+            ui.poll()
             flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
             ui.draw()
             win.flip()
@@ -429,15 +470,48 @@ def _report_frames(win) -> None:
               f"({100 * win.nDroppedFrames / total:.1f}%)")
 
 
+def wait_for_autocomplete(win, autocomplete) -> bool:
+    """Loading screen until the language model is up. False on Escape. If it fails
+    to load, says so and returns True: the speller runs with blank suggestions."""
+    from psychopy import core, event
+
+    from .stimulus import show_message
+
+    clock = core.Clock()
+    while not autocomplete.ready.is_set():
+        if autocomplete.failed.value or not autocomplete.is_alive():
+            show_message(win, "Autocomplete failed to load - see the terminal.\n\n"
+                              "Continuing without suggestions.")
+            core.wait(3)
+            return True
+        show_message(win, f"Loading the language model ({autocomplete.engine})...\n\n"
+                          f"{clock.getTime():.0f} s")
+        if event.getKeys(keyList=["escape"]):
+            return False
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--keys", action="store_true", help="no headset, no flicker: 1 / 2 pick a box")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
+    parser.add_argument("--engine", default="gpt2", choices=["gpt2", "smollm2", "pythia", "bigram", "none"],
+                        help="autocomplete model (default gpt2; none = blank suggestions)")
+    parser.add_argument("--confidence", type=float, default=None,
+                        help="probability given to each picked box (default: autocomplete.PICK_CONFIDENCE)")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
         parser.error(f"the speller has 2 boxes; config.py has {cfg.N_TARGETS} targets")
+
+    # Started first so the model loads while the board sets up.
+    autocomplete = None
+    if args.engine != "none":
+        from .autocomplete import PICK_CONFIDENCE, AutocompleteProcess
+
+        autocomplete = AutocompleteProcess(args.engine, args.confidence or PICK_CONFIDENCE)
+        autocomplete.start()
 
     recorder = None
     if not args.keys:
@@ -468,9 +542,14 @@ def main() -> None:
                 return
             if not wait_for_board(win, recorder, "Setting up the board and training the model..."):
                 return
+        if autocomplete:
+            if not wait_for_autocomplete(win, autocomplete):
+                return
+            if not autocomplete.ready.is_set():
+                autocomplete = None
 
         squares, cues, _ = build_stimuli(win)
-        ui = SpellerUI(win, cues)
+        ui = SpellerUI(win, cues, autocomplete)
         how = "1 / 2 = left / right box" if args.keys else "Look at a box"
         if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
                                  "Left arrow = wheel    Right arrow = space\n"
@@ -487,6 +566,9 @@ def main() -> None:
         if recorder:
             recorder.stop()
             recorder.join(timeout=10)
+        if autocomplete:
+            autocomplete.stop()
+            autocomplete.join(timeout=5)
         win.close()
         if ui and ui.items:
             print(f"\nTyped: {ui.text!r}")
