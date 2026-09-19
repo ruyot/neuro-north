@@ -18,12 +18,12 @@ Based on NeuroPawn's SSVEP + TRCA pipeline, adapted for the Knight IMU on macOS.
 - ✅ `ssvep/` package: config, board, preprocessing, stimulus (PsychoPy), recording process, TRCA model
 - ✅ PsychoPy verified frame-locked at 60.0 Hz on the MacBook Air display (pygame rejected: no vsync on macOS)
 - ✅ `collect_training_data.py` — cued calibration blocks → `training_data/session_*/`
-- ✅ `evaluate_trca.py` — leave-one-block-out accuracy + ITR
+- ✅ `evaluate_trca.py` — SSVEP spectrum check (relative power table + plot, electrode ranking, alpha warning) + leave-one-block-out accuracy & ITR
 - ✅ `abcd_typer.py` — free typing + `--copy` test with accuracy / letters-per-min / ITR saved to `results/`
 - ✅ Tested without hardware: TRCA on simulated SSVEP (100% clear / 62% weak), recording process collect/predict/failure paths on synthetic board
 - ⬜ Electrodes moved to occipital montage (Oz, O1, O2, PO7, PO8, PO3, PO4, POz)
-- ⬜ Visual check of the flicker window (`--synthetic --windowed`)
-- ⬜ First real calibration session (6 blocks) + evaluate
+- ✅ Visual check of the flicker window (`--synthetic --windowed`); frame timing fixed
+- ⬜ First real calibration session (8 blocks) + evaluate
 - ⬜ First copy test on the real headset
 
 ## Phase 2 — Tune the A/B/C/D typer ⬜

@@ -47,14 +47,15 @@ def resolve_data_dir(data_dir: str | None) -> str:
     return data_dir
 
 
-def load_training_data(data_dir: str, n_blocks: int, n_targets: int = cfg.N_TARGETS):
+def load_training_data(data_dir: str, n_blocks: int, n_targets: int = cfg.N_TARGETS,
+                       crop: bool = True):
     """
     Load every block/trial CSV into an (samples, channels, trials) EEG cube.
 
     Returns
     -------
     eeg : np.ndarray, shape (gaze_samples, channels, n_blocks * n_targets)
-        Cropped to the TRCA analysis window.
+        Cropped to the TRCA analysis window (or the full capture if crop=False).
     labels : np.ndarray, shape (n_blocks * n_targets,)
         Target index (0..n_targets-1) for each trial.
     """
@@ -71,7 +72,8 @@ def load_training_data(data_dir: str, n_blocks: int, n_targets: int = cfg.N_TARG
     labels = np.array(list(range(n_targets)) * n_blocks)
 
     # Keep only the analysis window (skip visual latency).
-    eeg = eeg[crop_indices()]
+    if crop:
+        eeg = eeg[crop_indices()]
     return eeg, labels
 
 
@@ -89,7 +91,7 @@ def fit_model(data_dir: str | None = None, n_blocks: int | None = None) -> TRCA:
     """
     data_dir = resolve_data_dir(data_dir)
     if n_blocks is None:
-        n_blocks = _count_blocks(data_dir)
+        n_blocks = count_blocks(data_dir)
     if n_blocks == 0:
         raise FileNotFoundError(
             f"No training blocks found in {data_dir!r}. "
@@ -116,7 +118,7 @@ def cross_validate(data_dir: str | None = None,
     """
     data_dir = resolve_data_dir(data_dir)
     if n_blocks is None:
-        n_blocks = _count_blocks(data_dir)
+        n_blocks = count_blocks(data_dir)
     if n_blocks < 2:
         raise ValueError(f"Need at least 2 complete blocks to cross-validate, found {n_blocks}.")
     eeg, labels = load_training_data(data_dir, n_blocks)
@@ -146,7 +148,8 @@ def cross_validate(data_dir: str | None = None,
 
         correct = np.mean(predicted == y_test)
         accs[i] = correct * 100
-        itrs[i] = itr(n_targets, correct, selection_time)
+        # meegkit's itr() raises at or below chance; that's 0 bits/min.
+        itrs[i] = itr(n_targets, correct, selection_time) if correct > 1 / n_targets else 0.0
         print(f"  Block {i + 1}: accuracy = {accs[i]:5.1f}%   ITR = {itrs[i]:5.1f} bits/min")
 
     mu_acc, _, ci_acc, _ = normfit(accs, alpha_ci)
@@ -157,7 +160,7 @@ def cross_validate(data_dir: str | None = None,
           f"({ci:.0f}% CI: {ci_itr[0]:.1f}-{ci_itr[1]:.1f})")
 
 
-def _count_blocks(data_dir: str) -> int:
+def count_blocks(data_dir: str) -> int:
     """Count how many complete blocks exist (all N_TARGETS trial files present)."""
     block = 0
     while all(os.path.exists(os.path.join(data_dir, f"block_{block + 1}_{t}.csv"))

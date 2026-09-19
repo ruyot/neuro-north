@@ -3,6 +3,7 @@ brainflow>=5.23
 numpy>=2.3
 scipy>=1.18
 pandas>=3.0
+matplotlib>=3.9      # evaluate_trca.py spectrum plot
 scikit-learn>=1.9
 meegkit>=0.2        # TRCA classifier
 psychopy>=2026.2    # frame-locked flicker stimulus
