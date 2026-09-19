@@ -16,6 +16,11 @@ you looked at -> it's outlined in green and its letter is appended.
 
 Keys: Escape = quit, Backspace = delete last letter (free mode).
 Copy-test results are saved to results/.
+
+No headset handy?
+    --synthetic   fake board + the latest training_data_synthetic/ session
+                  (predictions are meaningless; this only tests the plumbing)
+    --no-board    flicker only: no board, no model, nothing typed (demo)
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ import os
 import time
 
 from ssvep import config as cfg
-from ssvep.recording import RecordingProcess
+from ssvep.recording import NullRecorder, RecordingProcess
 
 FEEDBACK_SECONDS = 0.5      # green outline on the predicted square
 PREDICTION_TIMEOUT = 3.0    # give up waiting for the classifier after this
@@ -37,7 +42,11 @@ def main() -> None:
     parser.add_argument("--port", default=cfg.SERIAL_PORT)
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
     parser.add_argument("--copy", help="copy test: sequence of A/B/C/D to type, e.g. ABDC")
-    parser.add_argument("--synthetic", action="store_true", help="fake board, to test the flow without hardware")
+    board_mode = parser.add_mutually_exclusive_group()
+    board_mode.add_argument("--synthetic", action="store_true",
+                            help="fake board, trained on the latest synthetic session")
+    board_mode.add_argument("--no-board", action="store_true",
+                            help="flicker only: no board, no model, nothing typed")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
 
@@ -47,12 +56,17 @@ def main() -> None:
         bad = set(target_text) - set(cfg.TARGET_LETTERS)
         if bad:
             parser.error(f"--copy may only contain {''.join(cfg.TARGET_LETTERS)}, got {''.join(sorted(bad))}")
+    if args.no_board and target_text:
+        parser.error("--copy needs a board (it scores predictions); drop --no-board")
     if args.windowed:
         cfg.FULLSCREEN = False
 
-    recorder = RecordingProcess(mode="predict", serial_port=args.port, data_dir=args.session,
-                                synthetic=args.synthetic)
-    recorder.start()
+    if args.no_board:
+        recorder = NullRecorder()
+    else:
+        recorder = RecordingProcess(mode="predict", serial_port=args.port, data_dir=args.session,
+                                    synthetic=args.synthetic)
+        recorder.start()
 
     from psychopy import core, event, visual
     from ssvep.stimulus import build_stimuli, build_window, run_trial, wait_for_board, wait_for_key
@@ -72,7 +86,10 @@ def main() -> None:
         typed_stim = visual.TextStim(win, pos=(0, -0.08), height=0.1, color="white", wrapWidth=1.8)
 
         def update_text():
-            if target_text:
+            if args.no_board:
+                prompt.text = "Demo mode: flicker only, nothing is typed (Esc to quit)"
+                typed_stim.text = ""
+            elif target_text:
                 prompt.text = f"Type: {target_text}"
                 typed_stim.text = typed + "_" * (len(target_text) - len(typed))
             else:
@@ -94,6 +111,8 @@ def main() -> None:
             count_before = recorder.prediction_count.value
             if not run_trial(win, squares, cues, -1, recorder, overlay=overlay):
                 break
+            if args.no_board:
+                continue  # demo: nothing to predict
 
             # Wait for the classifier's answer, keeping the screen alive.
             waited = core.Clock()
@@ -125,7 +144,7 @@ def main() -> None:
 
         if target_text and len(typed) == len(target_text):
             report = copy_test_report(target_text, typed, time.time() - start_time, predictions,
-                                      args.session or cfg.latest_session_dir())
+                                      args.session or cfg.latest_session_dir(args.synthetic))
             wait_for_key(win, report["summary"] + "\n\nPress SPACE to close.")
     except KeyboardInterrupt:
         print("Stopped by user.")

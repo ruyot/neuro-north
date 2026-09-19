@@ -68,9 +68,6 @@ INTER_TRIAL_INTERVAL = 0.5
 GAZE_DURATION = 1.0       # seconds of EEG used for classification
 VISUAL_LATENCY = 0.15     # skip this much at the start (cortex not locked on yet)
 
-# Samples grabbed from the ring buffer after each flicker: 1.5 s * 125 Hz -> 188.
-CAPTURE_SAMPLES = int(round(FLICKER_DURATION * SAMPLING_RATE)) + 1
-
 # --------------------------------------------------------------------------- #
 # Pre-processing filters (BrainFlow)
 # --------------------------------------------------------------------------- #
@@ -104,15 +101,31 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # holding block_{block}_{trial}.csv files. Electrodes move between sessions, so
 # models are trained on one session at a time (the latest by default).
 TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data")
+# --synthetic runs (BrainFlow's fake 250 Hz board) are kept separate so fake
+# data can never be picked up as the latest real session.
+SYNTHETIC_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data_synthetic")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
 
+# Rates the boards in this project stream at: Knight (125 Hz), synthetic (250 Hz).
+BOARD_RATES = (125, 250)
 
-def latest_session_dir() -> str | None:
-    """Most recent training_data/session_* folder with at least one complete block, or None.
 
+def capture_samples(sampling_rate: int) -> int:
+    """Samples grabbed after each flicker at `sampling_rate` (189 at 125 Hz)."""
+    return int(round(FLICKER_DURATION * sampling_rate)) + 1
+
+
+def data_root(synthetic: bool = False) -> str:
+    return SYNTHETIC_DATA_DIR if synthetic else TRAINING_DATA_DIR
+
+
+def latest_session_dir(synthetic: bool = False) -> str | None:
+    """Most recent session_* folder with at least one complete block, or None.
+
+    Looks in training_data/ (or training_data_synthetic/ if `synthetic`).
     Aborted runs can leave empty or partial session folders; those are skipped.
     """
-    sessions = sorted(glob.glob(os.path.join(TRAINING_DATA_DIR, "session_*")))
+    sessions = sorted(glob.glob(os.path.join(data_root(synthetic), "session_*")))
     for session in reversed(sessions):
         if all(os.path.exists(os.path.join(session, f"block_1_{t}.csv")) for t in range(1, N_TARGETS + 1)):
             return session

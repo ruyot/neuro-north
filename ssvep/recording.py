@@ -42,6 +42,8 @@ class RecordingProcess(Process):
     def __init__(self, mode: str, serial_port: str | None = cfg.SERIAL_PORT,
                  data_dir: str | None = None, n_blocks: int | None = None,
                  synthetic: bool = False):
+        """data_dir: collect -> folder to save into; predict -> session to train on
+        (None = latest real session, or latest synthetic one if `synthetic`)."""
         super().__init__(daemon=True)
         assert mode in ("collect", "predict")
         if mode == "collect" and data_dir is None:
@@ -83,8 +85,14 @@ class RecordingProcess(Process):
 
             model = None
             if self.mode == "predict":
-                from .trca_model import fit_model
-                model = fit_model(self.data_dir, self.n_blocks)
+                from .trca_model import fit_model, resolve_data_dir, session_rate
+                data_dir = resolve_data_dir(self.data_dir, self.synthetic)
+                rate = session_rate(data_dir)
+                if rate != board.sr:
+                    raise ValueError(
+                        f"calibration {os.path.basename(data_dir)} was recorded at {rate} Hz "
+                        f"but this board streams at {board.sr} Hz - recalibrate on this board.")
+                model = fit_model(data_dir, self.n_blocks)
             else:
                 os.makedirs(self.data_dir, exist_ok=True)
         except Exception:
@@ -97,7 +105,10 @@ class RecordingProcess(Process):
                     pass
             return
 
-        crop = crop_indices()
+        # Window sizes come from the LIVE board rate: the Knight streams at
+        # 125 Hz, BrainFlow's synthetic board at 250 Hz.
+        capture = cfg.capture_samples(board.sr)
+        crop = crop_indices(board.sr)
         self.ready.set()
 
         prev_flag = False
@@ -107,8 +118,8 @@ class RecordingProcess(Process):
             # Act only on the rising edge (False -> True) so each request
             # triggers exactly one capture.
             if flag and not prev_flag:
-                data = board.get_latest(cfg.CAPTURE_SAMPLES)
-                if data.shape[1] >= cfg.CAPTURE_SAMPLES:
+                data = board.get_latest(capture)
+                if data.shape[1] >= capture:
                     filter_eeg(data, board.eeg_channels, board.sr)
                     window = extract_channel_matrix(data, board.eeg_channels)
 
@@ -151,3 +162,31 @@ class RecordingProcess(Process):
 
     def stop(self) -> None:
         self._running.clear()
+
+
+class _Shared:
+    """Stand-in for a multiprocessing Value / Event."""
+
+    def __init__(self, value=None):
+        self.value = value
+
+    def is_set(self) -> bool:
+        return True
+
+
+class NullRecorder:
+    """Stand-in recorder for --no-board: the stimulus runs, nothing is recorded or predicted."""
+
+    def __init__(self):
+        self.ready = _Shared()
+        self.failed = _Shared(False)
+        self.recording_flag = _Shared(False)
+        self.block_index = _Shared(1)
+        self.label_index = _Shared(0)
+        self.last_prediction = _Shared(-1)
+        self.prediction_count = _Shared(0)
+
+    def start(self): pass
+    def stop(self): pass
+    def join(self, timeout=None): pass
+    def is_alive(self) -> bool: return True

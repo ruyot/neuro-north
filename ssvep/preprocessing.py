@@ -36,10 +36,14 @@ def extract_channel_matrix(data: np.ndarray, channels) -> np.ndarray:
     return matrix.T
 
 
-def crop_indices(sampling_rate: int = cfg.SAMPLING_RATE,
+def crop_indices(sampling_rate: int,
                  delay: float = cfg.VISUAL_LATENCY,
                  duration: float = cfg.GAZE_DURATION) -> np.ndarray:
-    """Sample indices of the TRCA analysis window: skip `delay`, keep `duration` (defaults -> [19:144])."""
+    """Sample indices of the TRCA analysis window: skip `delay`, keep `duration` ([19:144] at 125 Hz).
+
+    `sampling_rate` is required: it must be the rate the data was recorded at
+    (125 Hz Knight, 250 Hz synthetic), never assumed.
+    """
     delay_s = int(np.floor(delay * sampling_rate + 0.5))
     gaze_s = int(np.floor(duration * sampling_rate + 0.5))
     return np.arange(delay_s, delay_s + gaze_s)

@@ -17,6 +17,12 @@ Tips for good data
 Run it with:
     python collect_training_data.py                  # 6 blocks on the default port
     python collect_training_data.py --blocks 8 --port /dev/cu.usbserial-XXXX
+
+No headset handy?
+    --synthetic   BrainFlow's fake board: the full record/save loop runs, saving
+                  to training_data_synthetic/ so it never mixes with real data
+    --no-board    flicker only: no board, nothing recorded, no setup wait (demo)
+
 Press Escape at any time to stop early (data already saved is kept).
 """
 
@@ -28,25 +34,32 @@ import random
 import time
 
 from ssvep import config as cfg
-from ssvep.recording import RecordingProcess
+from ssvep.recording import NullRecorder, RecordingProcess
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=cfg.SERIAL_PORT)
     parser.add_argument("--blocks", type=int, default=6, help="times to cue every target (6-16 is sensible)")
-    parser.add_argument("--synthetic", action="store_true", help="fake board, to test the flow without hardware")
+    board_mode = parser.add_mutually_exclusive_group()
+    board_mode.add_argument("--synthetic", action="store_true",
+                            help="fake board; saves to training_data_synthetic/")
+    board_mode.add_argument("--no-board", action="store_true",
+                            help="flicker only: no board, nothing recorded")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
 
     if args.windowed:
         cfg.FULLSCREEN = False
-    session_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("session_%Y%m%d_%H%M%S"))
+    session_dir = os.path.join(cfg.data_root(args.synthetic), time.strftime("session_%Y%m%d_%H%M%S"))
 
     # Start the board first: its ~34 s channel setup runs while the window opens.
-    recorder = RecordingProcess(mode="collect", serial_port=args.port, data_dir=session_dir,
-                                synthetic=args.synthetic)
-    recorder.start()
+    if args.no_board:
+        recorder = NullRecorder()
+    else:
+        recorder = RecordingProcess(mode="collect", serial_port=args.port, data_dir=session_dir,
+                                    synthetic=args.synthetic)
+        recorder.start()
 
     # Import PsychoPy only in the parent, after the child has been spawned.
     from psychopy import core
@@ -56,6 +69,9 @@ def main() -> None:
     completed = 0
     try:
         if not wait_for_board(win, recorder, "Setting up the Knight board (~35 s)...\nPlease wait."):
+            raise KeyboardInterrupt
+        if args.no_board and not wait_for_key(win, "Demo mode: flicker only.\nNothing is being recorded.\n\n"
+                                                   "Press SPACE to continue."):
             raise KeyboardInterrupt
 
         squares, cues, labels = build_stimuli(win)
@@ -77,16 +93,17 @@ def main() -> None:
                     raise KeyboardInterrupt
             completed = block
 
-        wait_for_key(win, f"Done! {completed} blocks saved.\n\nPress SPACE to close.")
+        wait_for_key(win, "Demo done.\n\nPress SPACE to close." if args.no_board else
+                     f"Done! {completed} blocks saved.\n\nPress SPACE to close.")
     except KeyboardInterrupt:
         print("Stopped early by user.")
     finally:
         recorder.stop()
         recorder.join(timeout=10)
         win.close()
-        if completed:
+        if completed and not args.no_board:
             print(f"\nSaved {completed} complete block(s) to {session_dir}")
-            print("Next: python evaluate_trca.py")
+            print(f"Next: python evaluate_trca.py{' --synthetic' if args.synthetic else ''}")
         elif os.path.isdir(session_dir) and not os.listdir(session_dir):
             os.rmdir(session_dir)  # aborted before any trial was saved
         core.quit()

@@ -5,3 +5,4 @@ __pycache__/
 *.csv
 training_data/
 results/
+training_data_synthetic/

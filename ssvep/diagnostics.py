@@ -27,7 +27,7 @@ PEAK_HALF_WIDTH = 0.3  # Hz: power at f = max within f +/- this
 CLEAR, WEAK = 1.3, 1.1  # thresholds on the diagonal ratio
 
 
-def trial_spectra(eeg: np.ndarray, sampling_rate: int = cfg.SAMPLING_RATE):
+def trial_spectra(eeg: np.ndarray, sampling_rate: int):
     """Power spectrum of every trial and channel.
 
     eeg: (samples, channels, trials) -> freqs (F,), power (F, channels, trials)
@@ -58,9 +58,10 @@ def relative_power(freqs, power, labels, n_targets=cfg.N_TARGETS):
     return absolute / absolute.mean(axis=0, keepdims=True)
 
 
-def report(eeg: np.ndarray, labels: np.ndarray, session_name: str, plot_path: str | None = None) -> dict:
+def report(eeg: np.ndarray, labels: np.ndarray, session_name: str, sampling_rate: int,
+           plot_path: str | None = None) -> dict:
     """Print the SSVEP check for a session and optionally save the spectrum plot."""
-    freqs, power = trial_spectra(eeg)
+    freqs, power = trial_spectra(eeg, sampling_rate)
     rel = relative_power(freqs, power, labels)      # (looked, freq, channel)
     rel_mean = rel.mean(axis=-1)                    # average over channels
     diag = np.diag(rel_mean)
@@ -99,13 +100,17 @@ def report(eeg: np.ndarray, labels: np.ndarray, session_name: str, plot_path: st
     # Overall verdict from the average diagonal, so one noisy letter can't swing it.
     failing = [i for i in range(len(fs)) if diag[i] < CLEAR]
     if not failing:
+        verdict = "working"
         print("\n  -> SSVEP visible for every letter. Headset is working; tune software if accuracy is low.")
     elif diag.mean() < WEAK:
+        verdict = "none"
         print("\n  -> No SSVEP response. Check electrode contact/placement before changing code.")
     elif strong_alpha and set(failing) <= set(ten_hz):
+        verdict = "alpha"
         print("\n  -> SSVEP visible except at 10 Hz, which is masked by alpha. "
               "Consider replacing 10 Hz with a frequency outside 8-13 Hz.")
     else:
+        verdict = "partial"
         weak_letters = ", ".join(letters[i] for i in failing)
         print(f"\n  -> Partial response (weak: {weak_letters}). Improve contact on the weakest "
               "electrodes and collect more blocks.")
@@ -113,7 +118,8 @@ def report(eeg: np.ndarray, labels: np.ndarray, session_name: str, plot_path: st
     if plot_path:
         _plot(freqs, power, labels, rel_mean, session_name, plot_path)
         print(f"\n  Spectrum plot saved to {plot_path}")
-    return {"relative_power": rel_mean, "per_channel": per_channel, "alpha_ratio": alpha_ratio}
+    return {"verdict": verdict, "relative_power": rel_mean, "per_channel": per_channel,
+            "alpha_ratio": alpha_ratio}
 
 
 def _plot(freqs, power, labels, rel_mean, session_name, path):

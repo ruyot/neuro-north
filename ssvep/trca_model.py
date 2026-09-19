@@ -35,16 +35,32 @@ from . import config as cfg
 from .preprocessing import crop_indices
 
 
-def resolve_data_dir(data_dir: str | None) -> str:
-    """Use `data_dir` if given, else the latest calibration session."""
+def resolve_data_dir(data_dir: str | None, synthetic: bool = False) -> str:
+    """Use `data_dir` if given, else the latest (real or synthetic) calibration session."""
     if data_dir is None:
-        data_dir = cfg.latest_session_dir()
+        data_dir = cfg.latest_session_dir(synthetic)
     if data_dir is None:
         raise FileNotFoundError(
-            f"No calibration sessions in {cfg.TRAINING_DATA_DIR!r}. "
-            "Run collect_training_data.py first."
+            f"No calibration sessions in {cfg.data_root(synthetic)!r}. "
+            f"Run collect_training_data.py{' --synthetic' if synthetic else ''} first."
         )
     return data_dir
+
+
+def session_rate(data_dir: str) -> int:
+    """Sampling rate a session was recorded at, recovered from one trial's length.
+
+    Only rates a board in this project actually streams at are accepted, so a
+    changed FLICKER_DURATION can't silently "derive" a bogus rate.
+    """
+    n_rows = len(pd.read_csv(os.path.join(data_dir, "block_1_1.csv")))
+    for rate in cfg.BOARD_RATES:
+        if cfg.capture_samples(rate) == n_rows:
+            return rate
+    raise ValueError(
+        f"{data_dir!r}: trials have {n_rows} samples, which matches no known board rate "
+        f"{cfg.BOARD_RATES} at FLICKER_DURATION={cfg.FLICKER_DURATION} s."
+    )
 
 
 def load_training_data(data_dir: str, n_blocks: int, n_targets: int = cfg.N_TARGETS,
@@ -73,23 +89,24 @@ def load_training_data(data_dir: str, n_blocks: int, n_targets: int = cfg.N_TARG
 
     # Keep only the analysis window (skip visual latency).
     if crop:
-        eeg = eeg[crop_indices()]
+        eeg = eeg[crop_indices(session_rate(data_dir))]
     return eeg, labels
 
 
-def build_model() -> TRCA:
-    """Create an (untrained) TRCA classifier configured from `config`."""
-    return TRCA(cfg.SAMPLING_RATE, cfg.FILTERBANK, cfg.USE_ENSEMBLE_TRCA)
+def build_model(sampling_rate: int) -> TRCA:
+    """Create an (untrained) TRCA classifier at the data's sampling rate."""
+    return TRCA(sampling_rate, cfg.FILTERBANK, cfg.USE_ENSEMBLE_TRCA)
 
 
-def fit_model(data_dir: str | None = None, n_blocks: int | None = None) -> TRCA:
+def fit_model(data_dir: str | None = None, n_blocks: int | None = None,
+              synthetic: bool = False) -> TRCA:
     """
     Load all training data and fit a TRCA model ready for live prediction.
 
     If `data_dir` is None the latest session is used. If `n_blocks` is None it
     is inferred from how many block_*_1.csv files exist.
     """
-    data_dir = resolve_data_dir(data_dir)
+    data_dir = resolve_data_dir(data_dir, synthetic)
     if n_blocks is None:
         n_blocks = count_blocks(data_dir)
     if n_blocks == 0:
@@ -98,19 +115,21 @@ def fit_model(data_dir: str | None = None, n_blocks: int | None = None) -> TRCA:
             "Run collect_training_data.py first."
         )
 
+    rate = session_rate(data_dir)
     eeg, labels = load_training_data(data_dir, n_blocks)
-    model = build_model()
+    model = build_model(rate)
     model.fit(eeg, labels)
     print(f"TRCA fitted on {n_blocks} block(s) from {os.path.basename(data_dir)} "
-          f"({eeg.shape[-1]} trials, {eeg.shape[1]} channels).")
+          f"({eeg.shape[-1]} trials, {eeg.shape[1]} channels, {rate} Hz).")
     return model
 
 
 def cross_validate(data_dir: str | None = None,
                    n_blocks: int | None = None,
-                   alpha_ci: float = 0.05) -> None:
+                   alpha_ci: float = 0.05) -> np.ndarray:
     """
     Leave-one-block-out cross-validation, reporting accuracy and ITR.
+    Returns the per-block accuracy (%).
 
     This is the honest way to estimate how well the classifier will work: each
     block is held out once as an unseen test set while the rest train the model.
@@ -129,7 +148,7 @@ def cross_validate(data_dir: str | None = None,
     selection_time = cfg.FLICKER_DURATION + cfg.INTER_TRIAL_INTERVAL
     ci = 100 * (1 - alpha_ci)
 
-    model = build_model()
+    model = build_model(session_rate(data_dir))
     accs = np.zeros(n_blocks)
     itrs = np.zeros(n_blocks)
 
@@ -161,6 +180,7 @@ def cross_validate(data_dir: str | None = None,
           f"({ci:.0f}% CI: {ci_acc[0]:.1f}-{ci_acc[1]:.1f}%)   chance = {100 / n_targets:.0f}%")
     print(f"Mean ITR      = {mu_itr:.1f} bits/min  "
           f"({ci:.0f}% CI: {ci_itr[0]:.1f}-{ci_itr[1]:.1f})")
+    return accs
 
 
 def count_blocks(data_dir: str) -> int:

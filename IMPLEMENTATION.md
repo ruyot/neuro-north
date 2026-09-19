@@ -57,6 +57,15 @@ Based on NeuroPawn's SSVEP + TRCA pipeline, adapted for the Knight IMU on macOS.
 
 Newest first. Record findings, numbers, and gotchas here.
 
+### 2026-09-19 (self-check)
+- `self_check.py`: 23 checks with no headset or display, ~6 s — config (board 66, rows, rate, filters below Nyquist), flicker dominant frequencies on 60 Hz, simulated SSVEP through real filters → spectrum verdict + TRCA (clear → 100%, pure noise rejected), synthetic-board recording. Idea from Abdullah's branch; our own implementation.
+- Limitation: the flicker check confirms each square's dominant frequency, not frame-level evenness.
+
+### 2026-09-19 (ported from `ssvep-knight-validation`, part 2)
+- `--synthetic` runs now save to `training_data_synthetic/`, so fake data can never be picked up as the latest real session. `evaluate_trca.py --synthetic` / `abcd_typer.py --synthetic` use them.
+- Sampling rate is no longer assumed: capture/crop use the live board rate (125 Hz Knight, 250 Hz synthetic), and TRCA reads a session's rate from its trial length. Typing with a calibration from a different-rate board is refused.
+- `--no-board` demo mode for `collect_training_data.py` and `abcd_typer.py`: flicker only, no board, nothing recorded.
+
 ### 2026-09-19 (bug fixes from `ssvep-knight-validation`)
 - Ported three fixes found by Abdullah on his parallel branch: `normfit` was given alpha instead of the confidence level (every "95% CI" was a 5% CI); ITR used the 1 s analysis window instead of the real 2 s per selection (overstated bits/min); window background `[0,0,0]` is mid-grey in PsychoPy rgb → now black.
 - Letter labels moved out so they no longer touch the cue outline.

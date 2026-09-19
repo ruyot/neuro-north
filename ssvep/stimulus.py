@@ -190,7 +190,7 @@ def run_trial(win, squares, cues, target_idx, recording_process,
 
     # --- Phase 3: CAPTURE ------------------------------------------------ #
     # Blank the squares and raise the flag. The rising edge makes the child
-    # grab the last CAPTURE_SAMPLES (the flicker window that just ended).
+    # grab the last 1.5 s of samples (the flicker window that just ended).
     _draw_blank(squares, overlay)
     win.flip()
     recording_process.recording_flag.value = True
@@ -200,11 +200,15 @@ def run_trial(win, squares, cues, target_idx, recording_process,
     return True
 
 
+def is_on(f: float, t: float) -> bool:
+    """The flicker rule: a square is white while sin(2*pi*f*t) >= 0."""
+    return np.sin(2 * np.pi * f * t) >= 0
+
+
 def _flicker_frame(squares, freqs, t: float) -> None:
-    """Set each square white/black based on the sign of its sine wave at time t."""
+    """Set each square white/black according to is_on() at time t."""
     for sq, f in zip(squares, freqs):
-        white = np.sin(2 * np.pi * f * t) >= 0
-        sq.fillColor = _WHITE if white else _BLACK
+        sq.fillColor = _WHITE if is_on(f, t) else _BLACK
         sq.draw()
 
 
