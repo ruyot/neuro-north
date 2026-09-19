@@ -77,9 +77,7 @@ class RecordingProcess(Process):
         try:
             model = self._train_model() if self.predict_session else None
             kwargs = {"channels": self.channels} if self.channels else {}
-            board = open_board(port=self.port,
-                               settle=SETTLE_SECONDS if self.settle is None else self.settle,
-                               **kwargs)
+            board = self._open_board(SETTLE_SECONDS, open_board, **kwargs)
             if model is not None and board.eeg_rows != self._model_rows:
                 raise ValueError(f"calibration used channels {self._model_rows} but this board is "
                                  f"streaming {board.eeg_rows} - they must match.")
@@ -170,6 +168,12 @@ class RecordingProcess(Process):
             close_board(board)
 
     # --- paradigm hooks: a subclass swaps these three to decode something else --- #
+
+    def _open_board(self, default_settle, open_board, **kwargs):
+        """Which board to open. A paradigm that does not need the IMU overrides this."""
+        return open_board(port=self.port,
+                          settle=default_settle if self.settle is None else self.settle,
+                          **kwargs)
 
     def _meta(self, board) -> dict:
         """What goes in session.json beside the recording."""

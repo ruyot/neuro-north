@@ -26,8 +26,10 @@ class MIRecorder(RecordingProcess):
     """RecordingProcess with the motor-imagery decoder."""
 
     def __init__(self, *args, mode: str = "clench", classes: list[int] | None = None,
-                 model: str | None = None, margin: float | None = None, **kwargs):
+                 model: str | None = None, margin: float | None = None,
+                 board: str = cfg.DEFAULT_BOARD, **kwargs):
         super().__init__(*args, **kwargs)
+        self.board = board
         self.mode = mode
         self.classes = classes or cfg.classes_for(cfg.DEFAULT_CLASSES)
         self.model_name = model
@@ -43,6 +45,14 @@ class MIRecorder(RecordingProcess):
         self._cap = 0               # ceiling on that, if an onset is never answered
 
     # --- hooks ------------------------------------------------------------- #
+
+    def _open_board(self, default_settle, open_board, **kwargs):
+        """The plain Knight by default: nothing here reads the IMU."""
+        board_id = cfg.BOARDS[self.board]
+        print(f"[board] opening the {self.board} Knight (board {board_id})")
+        return open_board(port=self.port, board_id=board_id,
+                          settle=default_settle if self.settle is None else self.settle,
+                          **kwargs)
 
     def _meta(self, board) -> dict:
         from .session import session_meta

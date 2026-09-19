@@ -63,6 +63,18 @@ BROADBAND = "8-30"
 SUB_BANDS = ["8-12", "12-16", "16-20", "20-26", "26-30"]
 MRCP_BAND = "0.05-5"
 
+# Which Knight to ask BrainFlow for. This is NOT just about reading the
+# accelerometer (motor imagery never does): the board id also decides how
+# BrainFlow parses each packet, so it has to match the hardware. This headset is
+# a Knight IMU, so 66 is correct and stays the default - the MIND club's 57 is
+# for the non-IMU board.
+#
+# "plain" is kept only as a diagnostic, for when the firmware sits in
+# "Scanning for IMU..." and never streams: it tells you whether the IMU scan is
+# what blocks it. Do not record with it - the EEG rows may not line up.
+BOARDS = {"imu": 66, "plain": 57}
+DEFAULT_BOARD = "imu"
+
 # Markers, same scheme as the SSVEP sessions: block * 10 + class + 1.
 LIVE_MARKER = 99
 

@@ -112,6 +112,10 @@ def main() -> None:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--keys", action="store_true", help="no headset: 1 / 2 pick a box")
     parser.add_argument("--port", help="override PORT_PATH from .env")
+    parser.add_argument("--board", default=cfg.DEFAULT_BOARD, choices=sorted(cfg.BOARDS),
+                        help="which Knight to ask BrainFlow for (default imu = this headset). "
+                             "plain is a DIAGNOSTIC only: it parses packets differently, so do "
+                             "not record real data with it")
     parser.add_argument("--session", help="calibration folder to decode with (default: latest)")
     parser.add_argument("--model", choices=["tangent", "fb-tangent", "fbcsp", "stack", "logvar"],
                         help="fit this model if the session has no saved one")
@@ -150,7 +154,7 @@ def main() -> None:
         # Live streaming must use exactly the calibration's channels: the spatial
         # filters are per electrode, so a different set means a different model.
         recorder = MIRecorder(port=args.port, predict_session=session,
-                              channels=info["eeg_rows"], model=args.model, margin=args.margin)
+                              channels=info["eeg_rows"], model=args.model, margin=args.margin, board=args.board)
         recorder.start()
 
     from psychopy import core

@@ -41,14 +41,18 @@ class Board:
 
 def open_board(port: str | None = None, channels=DEFAULT_CHANNELS,
                settle: float = SETTLE_SECONDS, buffer_size: int = BUFFER_SIZE,
-               quiet: bool = True) -> Board:
+               quiet: bool = True, board_id: int | None = None) -> Board:
+    """board_id: defaults to the Knight's IMU variant. Paradigms that never read
+    the accelerometer can pass the plain Knight instead - asking for the IMU
+    makes the firmware scan for it, and a headset whose IMU does not answer
+    sits in that scan and never streams EEG."""
     if quiet:
         BoardShim.disable_board_logger()
 
     port = port or stream.PORT
     if not port:
         raise RuntimeError("PORT_PATH is not set - add it to .env")
-    board_id = int(BoardIds.NEUROPAWN_KNIGHT_BOARD_IMU)
+    board_id = int(BoardIds.NEUROPAWN_KNIGHT_BOARD_IMU) if board_id is None else int(board_id)
     params = BrainFlowInputParams()
     params.serial_port = port
 

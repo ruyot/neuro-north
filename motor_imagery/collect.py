@@ -122,6 +122,13 @@ def main() -> None:
     parser.add_argument("--rest", type=int, default=None,
                         help="rest trials per block (default: same as every other cue)")
     parser.add_argument("--port", help="override PORT_PATH from .env")
+    parser.add_argument("--board", default=cfg.DEFAULT_BOARD, choices=sorted(cfg.BOARDS),
+                        help="which Knight to ask BrainFlow for (default imu = this headset). "
+                             "plain is a DIAGNOSTIC only: it parses packets differently, so do "
+                             "not record real data with it")
+    parser.add_argument("--settle", type=float, default=None,
+                        help="seconds to wait for boot chatter before enabling channels "
+                             "(default 3; raise to 8-10 right after replugging the USB-C)")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     parser.add_argument("--channels", default="",
                         help="board channels to record, e.g. 1,2,3,4 (default: all 8)")
@@ -133,7 +140,7 @@ def main() -> None:
 
     session_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime(f"{cfg.SESSION_PREFIX}%Y%m%d_%H%M%S"))
     recorder = MIRecorder(port=args.port, session_dir=session_dir, channels=channels,
-                          mode=args.mode, classes=classes)
+                          settle=args.settle, mode=args.mode, classes=classes, board=args.board)
     recorder.start()
 
     from psychopy import core
