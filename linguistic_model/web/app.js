@@ -13,6 +13,7 @@ const positionCount = document.querySelector("#position-count");
 const topControl = document.querySelector("#candidate-top");
 const bottomControl = document.querySelector("#candidate-bottom");
 const toast = document.querySelector("#toast");
+const completionEngine = document.querySelector("#completion-engine");
 
 let state = null;
 let busy = false;
@@ -49,6 +50,10 @@ async function act(action, payload = {}) {
     render();
   } catch (error) {
     showError(error.message);
+    if (state) {
+      completionEngine.value = state.engine;
+      status.textContent = state.last_event;
+    }
   } finally {
     busy = false;
     root.classList.remove("busy");
@@ -74,7 +79,8 @@ function renderTargets() {
     const button = document.createElement("button");
     button.className = "target";
     button.type = "button";
-    button.setAttribute("aria-label", `Select ${target.range} at simulated ${target.frequency} hertz`);
+    const displayLetters = target.letters.map((letter) => letter.toUpperCase());
+    button.setAttribute("aria-label", `Select letters ${displayLetters.join(", ")} at simulated ${target.frequency} hertz`);
 
     const shortcut = document.createElement("span");
     shortcut.className = "target-index";
@@ -82,14 +88,14 @@ function renderTargets() {
     const frequency = document.createElement("span");
     frequency.className = "frequency";
     frequency.textContent = `${target.frequency} Hz`;
-    const range = document.createElement("strong");
-    range.className = "range-name";
-    range.textContent = target.range;
+    const letters = document.createElement("strong");
+    letters.className = "range-name";
+    letters.textContent = displayLetters.join(" ");
     const caption = document.createElement("span");
     caption.className = "target-caption";
     caption.textContent = "Simulated focus";
 
-    button.append(shortcut, frequency, range, caption);
+    button.append(shortcut, frequency, letters, caption);
     button.addEventListener("click", () => act("select", {
       range: target.range,
       confidence: Number(confidence.value) / 100,
@@ -112,6 +118,18 @@ function setPredictionControl(button, candidate, direction) {
   button.disabled = false;
   word.textContent = `${candidate.word} · ${percent(candidate.probability)}`;
   button.onclick = () => act("accept", { word: candidate.word });
+}
+
+function renderEngine() {
+  completionEngine.replaceChildren();
+  state.engines.forEach((engine) => {
+    const option = document.createElement("option");
+    option.value = engine.id;
+    option.textContent = engine.label;
+    completionEngine.append(option);
+  });
+  completionEngine.value = state.engine;
+  completionEngine.disabled = false;
 }
 
 function renderCandidates() {
@@ -192,6 +210,7 @@ function renderTrace() {
 function render() {
   renderSentence();
   renderTargets();
+  renderEngine();
   renderCandidates();
   renderTrace();
 }
@@ -204,9 +223,14 @@ document.querySelector("#space").addEventListener("click", () => act("space"));
 document.querySelector("#backspace").addEventListener("click", () => act("backspace"));
 document.querySelector("#clear").addEventListener("click", () => act("clear"));
 document.querySelector("#reset").addEventListener("click", () => act("reset"));
+completionEngine.addEventListener("change", () => {
+  const option = completionEngine.selectedOptions[0];
+  status.textContent = `Loading ${option.textContent} completion engine…`;
+  act("engine", { engine: completionEngine.value });
+});
 
 document.addEventListener("keydown", (event) => {
-  if (event.target instanceof HTMLInputElement) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   if (event.key === "1" || event.key === "2") {
     const target = state?.targets[Number(event.key) - 1];
     if (target) act("select", { range: target.range, confidence: Number(confidence.value) / 100 });

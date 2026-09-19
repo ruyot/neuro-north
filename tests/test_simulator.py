@@ -2,6 +2,18 @@ import unittest
 
 from linguistic_model import DecoderError, PipelineSimulator
 
+class PreferredWordScorer:
+    def __init__(self, preferred):
+        self.preferred = preferred
+
+    def score(self, context, candidates):
+        return {
+            candidate: (100.0 if candidate == self.preferred else 0.0)
+            for candidate in candidates
+        }
+
+
+
 
 class PipelineSimulatorTests(unittest.TestCase):
     def setUp(self):
@@ -19,6 +31,15 @@ class PipelineSimulatorTests(unittest.TestCase):
         self.assertTrue(all(word.isascii() and word.isalpha() for word in words))
         self.assertTrue(all(word == word.lower() for word in words))
         self.assertEqual({"a", "i"}, {word for word in words if len(word) == 1})
+        self.assertEqual("bigram", state["engine"])
+        self.assertEqual(
+            ["bigram", "gpt2", "smollm2", "pythia"],
+            [engine["id"] for engine in state["engines"]],
+        )
+        self.assertEqual(
+            [["a", "b", "c", "d", "e", "f"], ["g", "h", "i", "j", "k", "l"]],
+            [target["letters"] for target in state["targets"]],
+        )
 
     def test_page_selection_records_only_the_displayed_pair(self):
         self.simulator.next_page()
@@ -87,6 +108,38 @@ class PipelineSimulatorTests(unittest.TestCase):
         self.simulator.accept("the")
         self.simulator.backspace()
         self.assertEqual("", self.simulator.state()["sentence"])
+
+    def test_causal_engine_reranks_the_decoder_shortlist(self):
+        shortlist = self.simulator.decoder.candidates(limit=256).candidates
+        preferred = shortlist[-1].word
+        self.simulator._scorers["gpt2"] = PreferredWordScorer(preferred)
+
+        self.simulator.set_engine("gpt2")
+        state = self.simulator.state()
+
+        self.assertEqual("gpt2", state["engine"])
+        self.assertEqual("GPT-2", state["engine_label"])
+        self.assertEqual(preferred, state["candidates"][0]["word"])
+
+    def test_boundary_uses_the_selected_completion_engine(self):
+        self.simulator.select_range("A-F", 0.9)
+        self.simulator.select_range("A-F", 0.9)
+        exact = self.simulator.decoder.candidates(
+            limit=256,
+            completed_only=True,
+        ).candidates
+        preferred = exact[-1].word
+        self.simulator._scorers["gpt2"] = PreferredWordScorer(preferred)
+        self.simulator.set_engine("gpt2")
+
+        self.simulator.boundary()
+
+        self.assertEqual(preferred, self.simulator.state()["sentence"])
+
+    def test_unknown_completion_engine_is_rejected(self):
+        with self.assertRaisesRegex(DecoderError, "unknown completion engine"):
+            self.simulator.set_engine("unknown")
+        self.assertEqual("bigram", self.simulator.state()["engine"])
 
     def test_reset_restores_the_first_page_and_empty_session(self):
         self.simulator.next_page()

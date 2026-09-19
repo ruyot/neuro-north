@@ -1,6 +1,7 @@
 """State machine used by the mouse-driven SSVEP pipeline simulator."""
 
 from functools import lru_cache
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -12,6 +13,13 @@ from .decoder import ContextModel, DecoderError, LetterRanges, Lexicon, Linguist
 _DATA = Path(__file__).with_name("data")
 DEFAULT_LEXICON_SIZE = 50_000
 DEFAULT_LANGUAGE_WEIGHT = 0.35
+CAUSAL_LANGUAGE_WEIGHT = 0.35
+CAUSAL_SHORTLIST_SIZE = 256
+ENGINE_MODELS = {
+    "gpt2": ("GPT-2", "openai-community/gpt2"),
+    "smollm2": ("SmolLM2", "HuggingFaceTB/SmolLM2-135M"),
+    "pythia": ("Pythia", "EleutherAI/pythia-160m"),
+}
 
 
 def _load_wordfreq_counts(limit: int) -> Dict[str, float]:
@@ -86,6 +94,8 @@ class PipelineSimulator:
         self.decoder = decoder or build_demo_decoder()
         self.page_index = 0
         self.history: List[Dict[str, Any]] = []
+        self.engine = "bigram"
+        self._scorers: Dict[str, Any] = {}
         self.last_event = "Ready for a simulated selection."
 
     def select_range(self, label: str, confidence: float) -> None:
@@ -124,7 +134,10 @@ class PipelineSimulator:
         self.last_event = "Accepted suggestion %r." % accepted
 
     def boundary(self) -> None:
-        accepted = self.decoder.confirm_boundary()
+        candidates, _, _ = self._candidate_state(completed_only=True, limit=1)
+        if not candidates:
+            raise DecoderError("no complete dictionary word matches the current observations")
+        accepted = self.decoder.accept(candidates[0]["word"], allow_completion=False)
         self.history.clear()
         self.last_event = "Confirmed %r at the word boundary." % accepted
 
@@ -150,6 +163,104 @@ class PipelineSimulator:
         self.page_index = 0
         self.last_event = "Reset the simulated session."
 
+    def set_engine(self, engine: str) -> None:
+        if engine != "bigram" and engine not in ENGINE_MODELS:
+            raise DecoderError("unknown completion engine %r" % engine)
+        if engine in ENGINE_MODELS and engine not in self._scorers:
+            try:
+                from .causal_scorer import CausalCandidateScorer
+
+                self._scorers[engine] = CausalCandidateScorer(ENGINE_MODELS[engine][1])
+            except ImportError as exc:
+                raise DecoderError(
+                    "causal engines require Python 3.10 and the dependencies in "
+                    "linguistic_model/experiments/requirements.txt"
+                ) from exc
+            except Exception as exc:
+                raise DecoderError(
+                    "could not load %s: %s" % (ENGINE_MODELS[engine][0], exc)
+                ) from exc
+        self.engine = engine
+        self.last_event = "Completion engine set to %s." % self.engine_label
+
+    @property
+    def engine_label(self) -> str:
+        return "Bigram" if self.engine == "bigram" else ENGINE_MODELS[self.engine][0]
+
+    def _candidate_state(
+        self,
+        completed_only: bool = False,
+        limit: int = 8,
+    ) -> Tuple[List[Dict[str, Any]], int, Dict[str, float]]:
+        source_limit = limit if self.engine == "bigram" else CAUSAL_SHORTLIST_SIZE
+        result = self.decoder.candidates(
+            limit=source_limit,
+            completed_only=completed_only,
+        )
+        if self.engine == "bigram":
+            candidates = [
+                {
+                    "word": candidate.word,
+                    "probability": candidate.probability,
+                    "complete": candidate.complete,
+                    "eeg_log_likelihood": candidate.eeg_log_likelihood,
+                    "language_log_probability": candidate.language_log_probability,
+                }
+                for candidate in result.candidates
+            ]
+            ambiguity = {
+                "top_probability": result.ambiguity.top_probability,
+                "top_two_margin": result.ambiguity.top_two_margin,
+                "normalized_entropy": result.ambiguity.normalized_entropy,
+            }
+            return candidates[:limit], result.total_candidate_count, ambiguity
+
+        scorer = self._scorers[self.engine]
+        words = [candidate.word for candidate in result.candidates]
+        language_scores = scorer.score(self.decoder.confirmed_words, words)
+        scored = [
+            (
+                candidate,
+                self.decoder.eeg_weight * candidate.eeg_log_likelihood
+                + CAUSAL_LANGUAGE_WEIGHT * language_scores[candidate.word],
+                language_scores[candidate.word],
+            )
+            for candidate in result.candidates
+        ]
+        if not scored:
+            return [], 0, {
+                "top_probability": 0.0,
+                "top_two_margin": 0.0,
+                "normalized_entropy": 0.0,
+            }
+
+        maximum = max(item[1] for item in scored)
+        weights = [math.exp(item[1] - maximum) for item in scored]
+        normalizer = sum(weights)
+        ranked = sorted(
+            (
+                {
+                    "word": item[0].word,
+                    "probability": weight / normalizer,
+                    "complete": item[0].complete,
+                    "eeg_log_likelihood": item[0].eeg_log_likelihood,
+                    "language_log_probability": item[2],
+                }
+                for item, weight in zip(scored, weights)
+            ),
+            key=lambda candidate: (-candidate["probability"], candidate["word"]),
+        )
+        probabilities = [candidate["probability"] for candidate in ranked]
+        entropy = -sum(value * math.log(value) for value in probabilities if value > 0.0)
+        normalized_entropy = entropy / math.log(len(ranked)) if len(ranked) > 1 else 0.0
+        runner_up = probabilities[1] if len(probabilities) > 1 else 0.0
+        ambiguity = {
+            "top_probability": probabilities[0],
+            "top_two_margin": probabilities[0] - runner_up,
+            "normalized_entropy": normalized_entropy,
+        }
+        return ranked[:limit], result.total_candidate_count, ambiguity
+
     def dispatch(self, action: str, payload: Mapping[str, Any]) -> None:
         if action == "select":
             self.select_range(str(payload.get("range", "")), float(payload.get("confidence", 0.8)))
@@ -165,21 +276,13 @@ class PipelineSimulator:
             self.clear_word()
         elif action == "reset":
             self.reset()
+        elif action == "engine":
+            self.set_engine(str(payload.get("engine", "")))
         else:
             raise DecoderError("unknown simulator action %r" % action)
 
     def state(self) -> Dict[str, Any]:
-        result = self.decoder.candidates(limit=8)
-        candidates = [
-            {
-                "word": candidate.word,
-                "probability": candidate.probability,
-                "complete": candidate.complete,
-                "eeg_log_likelihood": candidate.eeg_log_likelihood,
-                "language_log_probability": candidate.language_log_probability,
-            }
-            for candidate in result.candidates
-        ]
+        candidates, candidate_count, ambiguity = self._candidate_state()
         sentence = " ".join(self.decoder.confirmed_words)
         current_ranges = [item["selected"] for item in self.history]
         offered = self.pages[self.page_index]
@@ -192,16 +295,25 @@ class PipelineSimulator:
             "page_number": self.page_index + 1,
             "page_count": len(self.pages),
             "targets": [
-                {"range": label, "frequency": frequency}
+                {
+                    "range": label,
+                    "letters": list(self.decoder.ranges.letters_for(label)),
+                    "frequency": frequency,
+                }
                 for label, frequency in zip(offered, self.frequencies)
             ],
             "history": list(self.history),
             "candidates": candidates,
-            "candidate_count": result.total_candidate_count,
-            "ambiguity": {
-                "top_probability": result.ambiguity.top_probability,
-                "top_two_margin": result.ambiguity.top_two_margin,
-                "normalized_entropy": result.ambiguity.normalized_entropy,
-            },
+            "candidate_count": candidate_count,
+            "ambiguity": ambiguity,
+            "engine": self.engine,
+            "engine_label": self.engine_label,
+            "engines": [
+                {"id": "bigram", "label": "Bigram"},
+                *[
+                    {"id": engine, "label": values[0]}
+                    for engine, values in ENGINE_MODELS.items()
+                ],
+            ],
             "last_event": self.last_event,
         }

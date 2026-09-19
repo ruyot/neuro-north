@@ -59,6 +59,12 @@ class LetterRanges:
     def labels(self) -> Tuple[str, ...]:
         return tuple(self._ranges)
 
+    def letters_for(self, label: str) -> Tuple[str, ...]:
+        try:
+            return tuple(sorted(self._ranges[label]))
+        except KeyError as exc:
+            raise DecoderError("unknown range label %r" % label) from exc
+
     def label_for(self, letter: str) -> str:
         try:
             return self._by_letter[letter.lower()]

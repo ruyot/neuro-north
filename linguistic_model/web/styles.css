@@ -24,9 +24,9 @@ body {
   background: var(--background);
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button { color: inherit; }
-button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .shell {
   width: min(1320px, calc(100% - 40px));
@@ -157,12 +157,33 @@ h2 { margin: 0; font-size: 0.95rem; line-height: 1.3; font-weight: 650; }
 .target:hover { border-color: var(--accent); background: var(--accent-soft); }
 .frequency { position: absolute; top: 11px; right: 11px; color: var(--muted); font-size: 0.72rem; font-variant-numeric: tabular-nums; }
 .target-index { position: absolute; top: 11px; left: 11px; color: #77818b; font-size: 0.67rem; }
-.range-name { display: block; font-size: clamp(1.8rem, 5vw, 3rem); font-weight: 680; letter-spacing: -0.04em; }
+.range-name { display: block; font-size: clamp(1.45rem, 3.4vw, 2.25rem); font-weight: 680; letter-spacing: 0.08em; }
 .target-caption { display: block; margin-top: 6px; color: var(--muted); font-size: 0.7rem; }
 
 .utility-row { flex-wrap: wrap; gap: 7px; margin-top: 14px; }
 .utility { padding: 7px 9px; color: #aeb5bc; font-size: 0.72rem; }
 .shortcut-note { margin-left: auto; color: #747d86; font-size: 0.66rem; }
+
+.engine-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 13px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: #15181b;
+}
+.engine-control label { color: var(--muted); font-size: 0.72rem; }
+.engine-control select {
+  min-width: 120px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 6px 28px 6px 8px;
+  color: var(--text);
+  background: var(--panel-raised);
+}
 
 .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 13px; }
 .metrics div { padding: 9px; border: 1px solid var(--line); border-radius: 4px; background: #15181b; }
