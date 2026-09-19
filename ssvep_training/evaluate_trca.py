@@ -10,7 +10,7 @@ import sys
 from . import config as cfg
 from .diagnostics import report
 from .session import latest_session, load_trials
-from .trca_model import cross_validate, print_cv
+from .trca_model import cross_validate, fit_idle, print_cv, print_idle
 
 
 def main() -> None:
@@ -48,6 +48,17 @@ def main() -> None:
             print("\n  " + explain_confusion(cv, *pair))
         summary.update(trca_accuracy=cv.mean_accuracy, trca_bits_per_min=float(cv.itr.mean()),
                        confusion=cv.confusion.tolist())
+        rest = load_trials(path, rest=True)
+        if rest.eeg.shape[-1]:
+            print()
+            idle = fit_idle(trials, rest)
+            print_idle(idle)
+            summary.update(rest_trials=int(rest.eeg.shape[-1]), idle_threshold=idle.threshold,
+                           rest_ignored=idle.rest_ignored, picks_kept=idle.picks_kept,
+                           kept_accuracy=idle.kept_accuracy)
+        else:
+            print("\n  No rest trials in this session - idle detection is off for it "
+                  "(record with --rest 1 to add them).")
     else:
         print("Need at least 2 blocks for the accuracy test.")
 

@@ -24,15 +24,18 @@ class RecordingProcess(Process):
 
     def __init__(self, port: str | None = None, session_dir: str | None = None,
                  settle: float | None = None, predict_session: str | None = None,
-                 channels=None):
+                 channels=None, idle: bool = False):
         """session_dir: where to save the recording (calibration); None = don't save.
-        predict_session: calibration to train TRCA on for live typing; None = no predictions."""
+        predict_session: calibration to train TRCA on for live typing; None = no predictions.
+        idle: predictions may be -1 ("neither") if the calibration has rest trials."""
         super().__init__(daemon=True)
         self.port = port
         self.channels = channels          # board channels 1-8; None = all
         self.session_dir = session_dir
         self.settle = settle
         self.predict_session = predict_session
+        self.idle = idle
+        self._threshold = None            # rest threshold on the winning TRCA score
 
         self.ready = Event()
         self.failed = Value("b", False)
@@ -69,6 +72,7 @@ class RecordingProcess(Process):
         from . import config as cfg
         from .board import SETTLE_SECONDS, close_board, open_board
         from .session import epoch_at, flicker_samples, history_samples, save_session, session_meta
+        from .trca_model import decide, scores
 
         board = None
         try:
@@ -125,7 +129,11 @@ class RecordingProcess(Process):
             epoch = epoch_at(data[board.eeg_rows], int(onsets[-1]), board.rate)
             if epoch is None:                          # flicker data not all here yet
                 return False
-            self.last_prediction.value = int(model.predict(epoch[:, :, None])[0])
+            trial_scores = scores(model, epoch[:, :, None])[0]
+            choice = decide(trial_scores, self._threshold)
+            print("[predict] scores " + " / ".join(f"{s:.3f}" for s in trial_scores)
+                  + (" -> neither" if choice < 0 else f" -> {cfg.TARGET_LETTERS[choice]}"))
+            self.last_prediction.value = choice
             with self.prediction_count.get_lock():
                 self.prediction_count.value += 1
             return True
@@ -184,7 +192,7 @@ class RecordingProcess(Process):
         """Fit TRCA on the calibration session; its targets must match today's config."""
         from . import config as cfg
         from .session import load_trials
-        from .trca_model import fit
+        from .trca_model import fit, fit_idle
 
         trials = load_trials(self.predict_session)
         if [round(f, 3) for f in trials.freqs] != [round(f, 3) for f in cfg.STIMULUS_FREQUENCIES]:
@@ -194,4 +202,15 @@ class RecordingProcess(Process):
         self._model_rows = trials.rows
         model = fit(trials)
         print(f"[predict] TRCA trained on {trials.eeg.shape[-1]} trials from {self.predict_session}")
+        if self.idle:
+            rest = load_trials(self.predict_session, rest=True)
+            if rest.eeg.shape[-1]:
+                idle = fit_idle(trials, rest)
+                self._threshold = idle.threshold
+                print(f"[predict] idle detection on: threshold {idle.threshold:.3f} from "
+                      f"{rest.eeg.shape[-1]} rest trials (ignored {100 * idle.rest_ignored:.0f}% of rest, "
+                      f"kept {100 * idle.picks_kept:.0f}% of picks)")
+            else:
+                print("[predict] no rest trials in this calibration - idle detection off "
+                      "(recalibrate to add them)")
         return model

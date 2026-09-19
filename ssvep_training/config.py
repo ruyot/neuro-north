@@ -34,7 +34,13 @@ GAZE_DURATION = 1.0     # length of the window that gets classified
 FILTER_HISTORY = 4.0
 
 # Calibration markers are block * 10 + target + 1 (32 = block 3, target B).
+# Target N_TARGETS is "rest": look at the centre cross while every square flickers.
 LIVE_MARKER = 99        # live typing trials, no label
+
+# Idle detection: rest trials set a threshold on the TRCA score of the winning
+# square. Live picks scoring under it type nothing ("neither"), so a drifting
+# gaze or a look at the text doesn't become a wrong letter.
+REST_TRIALS_PER_BLOCK = 1
 
 # TRCA filter bank (meegkit format), capped to stream.clean()'s 1-40 Hz band.
 FILTERBANK = [

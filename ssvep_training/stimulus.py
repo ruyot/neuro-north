@@ -177,12 +177,13 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
               overlay=(), freqs=cfg.STIMULUS_FREQUENCIES) -> bool:
     """One cue -> flicker -> rest trial. True to continue, False if Escape was pressed.
 
-    target_idx  : square to cue (0..3), or -1 for no cue (live typing)
+    target_idx  : cue to show (0..3 = a square, N_TARGETS = the rest cross if `cues`
+                  includes it), or -1 for no cue (live typing)
     marker_code : stamped into the EEG at flicker onset (session.encode_marker / LIVE_MARKER)
     overlay     : extra static stimuli (letter labels, typed text) drawn every frame
     """
     clock = core.Clock()
-    cue = cfg.TARGET_LETTERS[target_idx] if 0 <= target_idx < len(cues) else "none"
+    cue = (cfg.TARGET_LETTERS + ["rest"])[target_idx] if 0 <= target_idx < len(cues) else "none"
     print(f"[trial] cue {cue}, marker {marker_code}")
 
     # --- CUE ------------------------------------------------------------- #

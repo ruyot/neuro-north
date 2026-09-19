@@ -1,8 +1,11 @@
 """
 Record labelled SSVEP trials so TRCA can learn your specific responses.
 
-All squares flash at once, one frequency each (config.py: currently A 15 Hz left, B 20 Hz right)
+All squares flash at once, one frequency each (config.py: currently A 15 Hz left, B 20 Hz right).
+Each block also has rest trials: look at the red cross in the middle, not at
+either square. They teach the speller what "looking at neither" looks like.
     python -m ssvep_training.collect_training_data --blocks 8
+    python -m ssvep_training.collect_training_data --rest 0    # squares only, as before
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--blocks", type=int, default=8, help="times every square is cued (6-16 sensible)")
+    parser.add_argument("--rest", type=int, default=cfg.REST_TRIALS_PER_BLOCK,
+                        help="rest trials per block: look at the centre cross (0 = none)")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     parser.add_argument("--channels", default="",
                         help="board channels to record, e.g. 1,2,3,4 (default: all 8). Dead "
@@ -43,7 +48,7 @@ def main() -> None:
     recorder.start()
 
     # PsychoPy is imported only in the display process, after the board process exists.
-    from psychopy import core
+    from psychopy import core, visual
     from .stimulus import build_stimuli, build_window, run_trial, wait_for_board, wait_for_key
 
     win = build_window(fullscreen=not args.windowed)
@@ -56,19 +61,26 @@ def main() -> None:
             raise Quit("the board never started streaming - see [board] above")
 
         squares, cues, labels = build_stimuli(win)
+        # Rest = target N_TARGETS: a red cross cue, which stays up through the
+        # flicker so the eyes have somewhere to hold still.
+        cross = visual.TextStim(win, text="+", pos=(0, 0), color="red", height=0.2, bold=True)
+        rest_note = "When a red cross is in the middle, look at the cross instead.\n" if args.rest else ""
         for block in range(1, args.blocks + 1):
             if not wait_for_key(win, f"Block {block} of {args.blocks}\n\n"
                                      "Look only at the square outlined in red.\n"
+                                     f"{rest_note}"
                                      "Blink between flashes, not during them.\n\n"
                                      "Press SPACE to start."):
                 raise Quit
             # Random cue order per block, so the model can't learn order/fatigue
             # effects; each trial is labelled by target via its marker.
-            order = list(range(cfg.N_TARGETS))
+            order = list(range(cfg.N_TARGETS)) + [cfg.N_TARGETS] * args.rest
             random.shuffle(order)
             for target in order:
-                if not run_trial(win, squares, cues, target, recorder,
-                                 encode_marker(block, target), overlay=labels):
+                rest = target == cfg.N_TARGETS
+                if not run_trial(win, squares, [*cues, cross], target, recorder,
+                                 encode_marker(block, target),
+                                 overlay=[*labels, cross] if rest else labels):
                     raise Quit
             recorder.request_save()
             completed = block
@@ -94,8 +106,10 @@ def summarize(session_dir: str, completed: int) -> None:
         return
     trials = load_trials(session_dir)
     n = trials.eeg.shape[-1]
+    n_rest = load_trials(session_dir, rest=True).eeg.shape[-1]
     print(f"\nSession saved: {session_dir}")
     print(f"  {completed} complete block(s), {n} usable trial(s)"
+          + (f" + {n_rest} rest" if n_rest else "")
           + (f", {trials.skipped} skipped (not enough data around the marker)" if trials.skipped else ""))
     if n:
         print("Next: python -m ssvep_training.evaluate_trca")

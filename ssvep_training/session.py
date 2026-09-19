@@ -36,7 +36,8 @@ def session_meta(board) -> dict:
         "frequencies": cfg.STIMULUS_FREQUENCIES,
         "letters": cfg.TARGET_LETTERS,
         "flicker_duration": cfg.FLICKER_DURATION,
-        "marker_scheme": "block*10 + target + 1; live trials = %d" % cfg.LIVE_MARKER,
+        "marker_scheme": "block*10 + target + 1 (target %d = rest); live trials = %d"
+                         % (cfg.N_TARGETS, cfg.LIVE_MARKER),
     }
 
 
@@ -112,11 +113,12 @@ class Trials:
         return len(self.freqs)
 
 
-def load_trials(path: str, full: bool = False) -> Trials:
+def load_trials(path: str, full: bool = False, rest: bool = False) -> Trials:
     """Every labelled calibration trial in a session, cut with epoch_at().
 
     Targets come from the session's own session.json, so a session recorded with
-    a different frequency set still gets labelled correctly.
+    a different frequency set still gets labelled correctly. rest=True returns
+    the rest trials instead (target = len(freqs)); older sessions have none.
     """
     data, meta = load_session(path)
     rate, eeg = meta["rate"], data[meta["eeg_rows"]]
@@ -124,8 +126,8 @@ def load_trials(path: str, full: bool = False) -> Trials:
     markers = data[meta["marker_row"]]
     epochs, targets, blocks, skipped = [], [], [], 0
     for onset in np.flatnonzero(markers):
-        decoded = decode_marker(markers[onset], len(freqs))
-        if decoded is None:
+        decoded = decode_marker(markers[onset], len(freqs) + 1)
+        if decoded is None or (decoded[1] == len(freqs)) != rest:
             continue
         epoch = epoch_at(eeg, onset, rate, full)
         if epoch is None:

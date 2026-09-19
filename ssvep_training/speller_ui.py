@@ -18,6 +18,10 @@ process: every pick refreshes the two suggestions, and space swaps the word's
     python -m ssvep_training.speller_ui           # headset + latest calibration
     python -m ssvep_training.speller_ui --keys    # no headset, no flicker: 1 / 2 pick a box
     python -m ssvep_training.speller_ui --engine bigram   # faster, no GPT-2 (or none: off)
+
+If the calibration has rest trials, a pick whose TRCA score is no better than
+looking at neither box types nothing and a fresh selection starts (--no-idle
+turns this off).
 """
 
 from __future__ import annotations
@@ -448,6 +452,9 @@ def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
                     if ui.action_count != actions_at_mark:
                         print("[ui] action during the selection - pick dropped")
                         state = "mark"
+                    elif recorder.last_prediction.value < 0:
+                        print("[ui] neither box - nothing typed")
+                        state = "mark"
                     else:
                         ui.select_box(recorder.last_prediction.value)
                         t_fb, state = t, "feedback"
@@ -501,6 +508,8 @@ def main() -> None:
                         help="autocomplete model (default gpt2; none = blank suggestions)")
     parser.add_argument("--confidence", type=float, default=None,
                         help="probability given to each picked box (default: autocomplete.PICK_CONFIDENCE)")
+    parser.add_argument("--no-idle", action="store_true",
+                        help="always pick a box, even when the score says you looked at neither")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
         parser.error(f"the speller has 2 boxes; config.py has {cfg.N_TARGETS} targets")
@@ -526,7 +535,8 @@ def main() -> None:
         with open(os.path.join(session, "session.json")) as f:
             channels = json.load(f)["eeg_rows"]
         print(f"Training on {session}  (channels {channels})")
-        recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
+        recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels,
+                                    idle=not args.no_idle)
         recorder.start()
 
     from psychopy import core
