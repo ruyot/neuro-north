@@ -104,7 +104,39 @@ class Gestures:
         return high if dev[axis, col] > 0 else low
 
 
+def replay(path: str) -> None:
+    """Run the detector over a saved session. Every recording already contains
+    the gyro rows, so a calibration folder from the headset is real hardware
+    evidence for the axis map and the threshold without a live board."""
+    from .session import load_session
+
+    data, meta = load_session(path)
+    rate, rows = meta["rate"], gyro_rows(meta["board_id"])
+    gyro = data[rows]
+    det, fired = Gestures(rate), []
+    for i in range(0, gyro.shape[1], 3):      # the chunk size the recorder feeds
+        name = det.feed(gyro[:, i:i + 3])
+        if name:
+            fired.append((i / rate, name))
+
+    peak = np.abs(gyro - np.median(gyro, axis=1, keepdims=True)).max(axis=1)
+    print(f"{gyro.shape[1] / rate:.0f}s at {rate} Hz, gyro rows {rows}")
+    print("axis  gestures       fires at   peak   ratio")
+    for a in range(3):
+        level = det.limit[a] if det.limit is not None else float("nan")
+        names = "/".join(AXIS_GESTURES.get(a, ("unmapped",)))
+        print(f"  {a}  {names:<13} {level:8.1f} {peak[a]:6.0f} {peak[a] / level:6.1f}x")
+    print(f"{len(fired)} gestures" + (": " if fired else ""),
+          ", ".join(f"{t:.0f}s {n}" for t, n in fired[:24]))
+
+
 if __name__ == "__main__":
+    import sys
+
+    if len(sys.argv) > 1:                     # a session folder: replay it
+        replay(sys.argv[1])
+        raise SystemExit
+
     def run(sig, rate, size=3):
         # the recorder drains every 20 ms, so feed() carries its own history
         g, fired = Gestures(rate), []
