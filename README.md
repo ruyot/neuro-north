@@ -6,6 +6,9 @@ Run with the Knight EEG headset:
 ./run_speller.sh
 ```
 
+The launcher enables the action agent by default. It dry-runs OpenAI/Composio
+tool calls unless you add `--agent-live`.
+
 Run without a headset, using the keyboard and mouse:
 
 ```sh
@@ -34,4 +37,3 @@ recordings.
 
 The launcher uses `.venv/bin/python` by default. Set `PYTHON` to use another
 environment, for example `PYTHON=python3 ./run_speller.sh --simulate`.
-
