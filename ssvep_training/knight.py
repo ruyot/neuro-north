@@ -16,9 +16,7 @@ except ModuleNotFoundError:
 
 enable_eeg_channels = stream.enable_eeg_channels
 clean = stream.clean
-leadoff = stream.leadoff
 NAMES = stream.NAMES
 PORT = stream.PORT
-LOFF_P = stream.LOFF_P
-LOFF_N = stream.LOFF_N
-ACCEL = stream.ACCEL
+cca_score = stream.cca_score
+cca_reference = stream.cca_reference

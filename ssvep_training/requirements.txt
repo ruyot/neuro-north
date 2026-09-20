@@ -4,3 +4,4 @@ python-dotenv>=1.0
 psychopy>=2026.2
 meegkit>=0.2
 matplotlib>=3.9
+scipy>=1.14

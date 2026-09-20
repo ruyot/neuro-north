@@ -1,51 +1,45 @@
-"""Stimulus, trial and classifier settings. Board handling and filtering come
-from stream.py via knight.py."""
+"""Fresh two-target baseline. Freeze these settings during a validation run.
 
+These are starting parameters, not settings validated on the old recordings.
+"""
 from __future__ import annotations
-
 import os
 
-# One flicker frequency + letter per square. 2 -> left/right, 4 -> corners.
-# 15 and 20 Hz are whole-frame cycles on a 60 Hz screen (4 and 3 frames) and sit
-# clear of the 8-13 Hz alpha band, which would otherwise fire on any square.
-# 20 Hz relies on its fundamental: its 2nd harmonic (40 Hz) is stream.clean()'s cutoff.
-STIMULUS_FREQUENCIES = [15.0, 20.0]  # Hz
+# Frequency-pair experiment: positions remain A left, B right.
+STIMULUS_FREQUENCIES = [12.0, 15.0]
 TARGET_LETTERS = ["A", "B"]
 N_TARGETS = len(STIMULUS_FREQUENCIES)
 EXPECTED_REFRESH_HZ = 60
-
-# Two-target layout in normalised units (screen = -1..1 on both axes): square
-# centre x-offset, then (width, height). Further apart = less gaze crosstalk
-# between targets; smaller = weaker SSVEP, since the response scales with
-# stimulus area. Keep centre +/- half-width under ~0.96 or the cue outline clips.
 TARGET_X = 0.70
 TARGET_SIZE = (0.45, 1.0)
 
-# Trial timing (seconds): [cue] -> [flicker] -> [rest], marker at flicker onset.
 CUE_DURATION = 1.0
-FLICKER_DURATION = 1.5
-INTER_TRIAL_INTERVAL = 0.5
-
-VISUAL_LATENCY = 0.15   # skipped after onset: the cortex hasn't locked on yet
-GAZE_DURATION = 1.0     # length of the window that gets classified
-
-# stream.clean() is causal and its 1 Hz high-pass needs time to settle, so every
-# trial is filtered with this much EEG before the onset, then cut.
+FLICKER_DURATION = 2.5
+INTER_TRIAL_INTERVAL = 1.5
+VISUAL_LATENCY = 0.2
+GAZE_DURATION = 2.0
+MAX_GAZE_DURATION = GAZE_DURATION
+GAZE_STEP = 0.4
 FILTER_HISTORY = 4.0
+FILTER_BAND = (1.0, 40.0)
 
-# Calibration markers are block * 10 + target + 1 (32 = block 3, target B).
-LIVE_MARKER = 99        # live typing trials, no label
+# Plain CCA is the baseline. At these frequencies/40 Hz cutoff, both targets
+# use two harmonics each: A 12/24 Hz, B 15/30 Hz.
+# Bank scoring remains available for later comparison.
+CCA_BANDS = 1
+DECOY_FREQUENCIES = [11.0, 13.0, 17.5, 23.0, 26.0]
+# A heuristic abstention gate, NOT a calibrated probability or significance.
+# The new validation task reports accuracy, coverage, and idle false activations.
+CONFIDENCE_THRESHOLD = 0.5
 
-# TRCA filter bank (meegkit format), capped to stream.clean()'s 1-40 Hz band.
+LIVE_MARKER = 99
 FILTERBANK = [
-    [(5, 40), (3, 44)],      # widest band: every target's fundamental
+    [(5, 40), (3, 44)],
     [(14, 40), (10, 44)],
     [(22, 40), (16, 44)],
     [(30, 40), (24, 44)],
 ]
 USE_ENSEMBLE_TRCA = True
-
-# Each run writes training_data/session_<time>/ with raw.npz + session.json.
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")

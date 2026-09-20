@@ -1,7 +1,7 @@
 """
 Record labelled SSVEP trials so TRCA can learn your specific responses.
 
-All squares flash at once, one frequency each (config.py: currently A 15 Hz left, B 20 Hz right)
+All squares flash at once, one frequency each (frequencies are set in config.py).
     python -m ssvep_training.collect_training_data --blocks 8
 """
 

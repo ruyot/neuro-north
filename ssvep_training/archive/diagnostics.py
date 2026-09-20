@@ -7,7 +7,7 @@ import os
 
 import numpy as np
 
-from .session import Trials
+from ..session import Trials
 
 NFFT = 1024              # zero-padded FFT -> smooth spectrum
 PEAK_HALF_WIDTH = 0.3    # Hz: power at f = max within f +/- this
@@ -101,10 +101,10 @@ def report(trials: Trials, session_name: str, plot_path: str | None = None) -> d
     failing = [i for i in range(len(fs)) if diag[i] < CLEAR]
     if not failing:
         verdict = "working"
-        print("\n  -> SSVEP visible for every letter. Headset is working; tune software if accuracy is low.")
+        print("\n  -> Target-dependent spectral contrast is visible. Confirm it in fresh labeled trials.")
     elif diag.mean() < WEAK:
         verdict = "none"
-        print("\n  -> No SSVEP response. Check electrode contact/placement before changing code.")
+        print("\n  -> No clear target-dependent spectral contrast in this recording. Check timing, stream quality and contact.")
     else:
         verdict = "partial"
         print(f"\n  -> Partial response (weak: {', '.join(letters[i] for i in failing)}). Improve contact on "

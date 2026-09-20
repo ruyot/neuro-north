@@ -10,6 +10,7 @@ import sys
 from . import config as cfg
 from .diagnostics import report
 from .session import latest_session, load_trials
+from .cca_model import evaluate as cca_evaluate, harmonics_for
 from .trca_model import cross_validate, print_cv
 
 
@@ -41,6 +42,19 @@ def main() -> None:
     summary = {"session": path, "trials": int(trials.eeg.shape[-1]), "blocks": len(blocks),
                "spectrum_verdict": spectrum["verdict"], "alpha_ratio": spectrum["alpha_ratio"]}
     if len(blocks) >= 2:
+        # CCA first: it trains on nothing, so it says whether the signal is
+        # separable at all before any model gets a chance to paper over it.
+        cca, stats = cca_evaluate(trials)
+        bank = f"{cfg.CCA_BANDS}-band filter bank" if cfg.CCA_BANDS > 1 else "single band"
+        print_cv(cca, f"CCA ({bank}, {harmonics_for(trials.freqs)} harmonic(s), no training)")
+        print(f"\n  mean margin   {stats['margin']:+.3f}   (winner minus runner-up)")
+        print(f"  confidence    {stats['sigma']:+.2f} heuristic decoy contrast "
+              f"(correct picks {stats['sigma_correct']:+.2f}, wrong {stats['sigma_wrong']:+.2f})")
+        print("                 Heuristic contrast only: not a z-score, probability, or proof of SSVEP.")
+        summary.update(cca_accuracy=cca.mean_accuracy, cca_bits_per_min=float(cca.itr.mean()),
+                       **{f"cca_{k}": v for k, v in stats.items()})
+        print("\n" + "-" * 72 + "\n")
+
         cv = cross_validate(trials)
         print_cv(cv)
         pair = standout_confusion(cv)

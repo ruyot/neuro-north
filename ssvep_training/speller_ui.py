@@ -29,10 +29,12 @@ from . import config as cfg
 RANGES = ["abcdef", "ghijkl", "mnopqr", "stuvwxyz"]
 RESET_WHEEL_AFTER_PICK = True   # back to a-f / g-l after every pick and space
 
-# Same selection timing as typer.py.
-SELECTION_WINDOW = 1.8
-FEEDBACK_SECONDS = 0.45  
-PREDICTION_TIMEOUT = 4.0   
+# Live timing IS calibration's timing (config.py), minus the cue: dark rest ->
+# flicker from black -> dark rest. stimulus.run_trial records the same shape.
+FLICKER_SECONDS = cfg.FLICKER_DURATION
+FEEDBACK_SECONDS = cfg.INTER_TRIAL_INTERVAL   # dark rest after a letter lands
+PICK_FLASH_SECONDS = 0.35           # green box highlight, outlives the rest on purpose
+PREDICTION_TIMEOUT = 4.0
 FLASH_SECONDS = 0.3        
 MAX_TYPED_CHARS = 26       
 
@@ -148,7 +150,7 @@ class SpellerUI:
         if RESET_WHEEL_AFTER_PICK:
             self.page = 0
         _set_text(self.picked_labels[i], _spaced(letters))
-        self._flash(f"box{i}", FEEDBACK_SECONDS)
+        self._flash(f"box{i}", PICK_FLASH_SECONDS)
         self._changed(f"picked [{range_name(letters)}]")
 
     def next_wheel(self) -> None:
@@ -220,7 +222,8 @@ class SpellerUI:
     def _draw_progress(self, phase: str, fraction: float) -> None:
         if phase != self._bar_phase:        # colour + label only change between phases
             self.bar_fill.fillColor = ACCENT if phase == "go" else FAINT
-            _set_text(self.bar_label, "look" if phase == "go" else "next")
+            _set_text(self.bar_label, {"go": "look", "ready": "SPACE to select",
+                                      "prepare": "get ready"}.get(phase, "next"))
             self._bar_phase = phase
         self.bar_track.draw()
         if fraction > 0:
@@ -348,74 +351,128 @@ def run_keys(win, ui: SpellerUI, squares) -> None:
         _report_frames(win)
 
 
-def run_flicker(win, ui: SpellerUI, squares, recorder) -> None:
-    """typer.py's continuous flicker: mark -> 1.8 s -> classify -> feedback -> mark.
-    A UI action (wheel, space, ...) mid-selection means the user looked away:
-    that selection is dropped and a fresh one starts."""
+def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
+                manual: bool = False, overlay=()) -> None:
+    """One live selection, watched until it is confident enough to commit.
+
+        [dark rest] -> [flicker from black, marker on frame 1] -> [dark, feedback]
+
+    The squares keep flickering while the decision is still open. A first pick is
+    attempted at GAZE_DURATION; if it is below `threshold` the window grows by
+    GAZE_STEP and the same selection is scored again on more data, up to
+    MAX_GAZE_DURATION. Nothing on screen changes while this happens, so an easy
+    selection lands fast and only a weak one costs extra seconds -- and no data
+    is thrown away, unlike restarting.
+
+    Flicker starts from black because unbroken flicker measurably killed the
+    response (SSVEP SNR 1.5 -> 1.0), which is also what stimulus.run_trial
+    records. A UI action mid-selection means the user looked away: that
+    selection is dropped and a fresh one starts.
+    """
+    import gc
+
     from psychopy import core
 
-    from .stimulus import flicker_frame
+    from .stimulus import draw_blank, flicker_frame
+    from .cca_model import accept_prediction
+
+    if manual:
+        from psychopy import event
+        event.clearEvents(eventType="keyboard")
 
     clock = core.Clock()
     state, t_mark, t_req, t_fb, seen, actions_at_mark = "mark", 0.0, 0.0, 0.0, 0, 0
-    phase0 = 0.0                # flicker time origin, re-anchored at each marker (see typer.py)
+    if manual:
+        state = "ready"
+    t_prepare = 0.0
+    gaze = cfg.GAZE_DURATION
+    awaiting = False
     marking = False
     dropped_at_mark = 0
     win.recordFrameIntervals = True
+    gc.disable()                     # a collection mid-flicker would drop frames
     try:
         while True:
             t = clock.getTime()
+            if manual:
+                # Consume SPACE in every state so presses during a selection
+                # cannot queue up another selection after feedback.
+                start_pressed = bool(event.getKeys(keyList=["space"]))
+                if state == "ready" and start_pressed:
+                    t_prepare, state = t, "prepare"
+                elif state == "prepare" and t - t_prepare >= cfg.CUE_DURATION:
+                    state = "mark"
             if state == "mark":
-                phase0 = t
                 seen = recorder.prediction_count.value
                 actions_at_mark = ui.action_count
                 dropped_at_mark = win.nDroppedFrames
-                marking = True
-                t_mark, state = t, "collecting"
+                gaze, awaiting, marking = cfg.GAZE_DURATION, False, True
+                t_mark, state = t, "flicker"
+                frame = 0
 
-            if state == "feedback":          # grey drains away: next selection is about to start
-                ui.set_progress("break", 1 - (t - t_fb) / FEEDBACK_SECONDS)
-            elif t - t_mark < GO_SECONDS:
-                ui.set_progress("go", (t - t_mark) / GO_SECONDS)
-            else:
-                ui.set_progress("break", 1.0)
+            if state == "flicker":
+                # Bar fills over the window currently being collected, so it
+                # stretches rather than completing and sitting there.
+                ui.set_progress("go", min(1.0, (t - t_mark) / (cfg.VISUAL_LATENCY + gaze)))
+                # Phase starts at 0 on the first frame after the marker, exactly
+                # as run_trial's clock.reset() does before its flicker loop.
+                flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, frame, win.ssvep_refresh)
+            else:                    # feedback: squares dark, as in the rest period
+                fraction = 1 - (t - t_fb) / FEEDBACK_SECONDS if state == "feedback" else 1.0
+                phase = state if state in ("ready", "prepare") else "break"
+                ui.set_progress(phase, fraction)
+                draw_blank(squares)
 
-            flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, t - phase0)
             ui.draw()
+            for stimulus in overlay:
+                stimulus.draw()
+            if marking:
+                win.callOnFlip(recorder.mark_onset, cfg.LIVE_MARKER)
             win.flip()
+            if state == "flicker":
+                frame += 1
 
-            if marking:                      # first flicker frame is now on screen
-                recorder.mark_onset(cfg.LIVE_MARKER)
+            if marking:              # first flicker frame is now on screen
                 marking = False
 
             if not handle_keys(ui, boxes=False):
                 return
 
-            if state == "collecting":
+            if state == "flicker":
                 if ui.action_count != actions_at_mark:
-                    state = "mark"           # nothing requested yet, so restarting is safe
-                elif t - t_mark >= SELECTION_WINDOW:
+                    t_fb, state = t, "feedback"   # recover on a dark screen
+                elif not awaiting and t - t_mark >= cfg.VISUAL_LATENCY + gaze:
                     late = win.nDroppedFrames - dropped_at_mark
                     if late:
                         print(f"[warn] {late} late frame(s) in this selection - flicker timing slipped")
+                    recorder.gaze.value = gaze
                     recorder.request_prediction()
-                    t_req, state = t, "waiting"
-            elif state == "waiting":
-                # Wait for this prediction even if it'll be dropped, so it can't be
-                # mistaken for the next selection's.
-                if recorder.prediction_count.value != seen:
-                    if ui.action_count != actions_at_mark:
-                        print("[ui] action during the selection - pick dropped")
-                        state = "mark"
-                    else:
-                        ui.select_box(recorder.last_prediction.value)
+                    t_req, awaiting = t, True
+                elif awaiting and recorder.prediction_count.value != seen:
+                    seen = recorder.prediction_count.value
+                    awaiting = False
+                    sigma = recorder.last_sigma.value
+                    choice = recorder.last_prediction.value
+                    if win.nDroppedFrames > dropped_at_mark:
+                        choice = -1
+                        print("[hold] dropped display frame; rejecting selection")
+                    if accept_prediction(choice, sigma, threshold):
+                        ui.select_box(choice)
                         t_fb, state = t, "feedback"
-                elif t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive():
-                    print("[warn] no prediction for this selection - trying again")
-                    state = "mark"
+                    elif gaze >= cfg.MAX_GAZE_DURATION or choice < 0:
+                        print(f"[hold] insufficient evidence ({sigma:+.2f} decoy contrast); no selection")
+                        t_fb, state = t, "feedback"
+                    else:
+                        gaze = min(gaze + cfg.GAZE_STEP, cfg.MAX_GAZE_DURATION)
+                        print(f"[look] {sigma:+.1f} contrast < {threshold:+.1f} - "
+                              f"keep looking, window now {gaze:.1f}s")
+                elif awaiting and (t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive()):
+                    print("[warn] no prediction for this selection - starting over")
+                    t_fb, state = t, "feedback"
             elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
-                state = "mark"
+                state = "ready" if manual else "mark"
     finally:
+        gc.enable()
         _report_frames(win)
 
 
@@ -434,6 +491,19 @@ def main() -> None:
     parser.add_argument("--keys", action="store_true", help="no headset, no flicker: 1 / 2 pick a box")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
+    parser.add_argument("--decoder", choices=["cca", "trca"], default="cca",
+                        help="cca: sine/cosine correlation, needs no calibration (default). "
+                             "trca: templates learned from a calibration session.")
+    parser.add_argument("--channels", default="",
+                        help="board channels when running CCA without a calibration, e.g. 1,2,3,4,6,8")
+    parser.add_argument("--threshold", type=float, default=cfg.CONFIDENCE_THRESHOLD,
+                        help="minimum heuristic decoy contrast before a letter is typed; "
+                             "0 types every selection, higher rejects more selections; accuracy must be measured")
+    parser.add_argument("--save", action="store_true",
+                        help="record this live run to training_data/ so it can be analysed "
+                             "the same way a calibration is (live trials are marked 99, unlabelled)")
+    parser.add_argument("--manual", action="store_true",
+                        help="SPACE starts one EEG selection after a preparation cue; waits between choices")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
@@ -444,15 +514,39 @@ def main() -> None:
         from .recording import RecordingProcess
         from .session import latest_session
 
-        session = args.session or latest_session()
-        if not session:
-            sys.exit(f"No calibration in {cfg.TRAINING_DATA_DIR} - run "
-                     "python -m ssvep_training.collect_training_data first.")
-        # Live streaming must use exactly the calibration's channels (see typer.py).
-        with open(os.path.join(session, "session.json")) as f:
-            channels = json.load(f)["eeg_rows"]
-        print(f"Training on {session}  (channels {channels})")
-        recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
+        # CCA learns nothing from a session, so it only loads one if asked for.
+        session = args.session or (latest_session() if args.decoder == "trca" else None)
+        if args.decoder == "trca" and not session:
+            sys.exit(f"--decoder trca needs a calibration; none in {cfg.TRAINING_DATA_DIR}. "
+                     "Record one, or use --decoder cca.")
+
+        # --channels wins. It used to lose to the session's list, which silently
+        # streamed unwanted electrodes into every epoch. CCA is scale-invariant,
+        # but extra artifact/noise channels can still overfit short windows.
+        if args.channels:
+            channels = [int(c) for c in args.channels.split(",")]
+            source = "--channels"
+        elif session:
+            with open(os.path.join(session, "session.json")) as f:
+                channels = json.load(f)["eeg_rows"]
+            source = os.path.basename(os.path.normpath(session))
+        else:
+            sys.exit("Pass --channels 1,2,3,4 (CCA needs no calibration), or --session to reuse one.")
+        if session and args.decoder == "trca":
+            # TRCA has one weight per channel, so live must stream exactly the
+            # calibration's channels.
+            with open(os.path.join(session, "session.json")) as f:
+                trained_on = json.load(f)["eeg_rows"]
+            if trained_on != channels:
+                sys.exit(f"--decoder trca was trained on channels {trained_on} but you asked for "
+                         f"{channels}. TRCA has one weight per channel; they must match.")
+        print(f"{args.decoder.upper()} | channels {channels} (from {source})")
+        live_dir = None
+        if args.save:
+            live_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("live_%Y%m%d_%H%M%S"))
+            print(f"Recording this run to {live_dir}")
+        recorder = RecordingProcess(port=args.port, predict_session=session, session_dir=live_dir,
+                                    channels=channels, decoder=args.decoder)
         recorder.start()
 
     from psychopy import core
@@ -466,25 +560,32 @@ def main() -> None:
                                      f"{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\nDo not use it if you have "
                                      "epilepsy or have ever had a seizure.\n\nPress SPACE to continue."):
                 return
-            if not wait_for_board(win, recorder, "Setting up the board and training the model..."):
+            if not wait_for_board(win, recorder, "Setting up the board..."):
                 return
 
         squares, cues, _ = build_stimuli(win)
         ui = SpellerUI(win, cues)
-        how = "1 / 2 = left / right box" if args.keys else "Look at a box"
+        how = ("1 / 2 = left / right box" if args.keys else
+               "SPACE, then look at a box" if args.manual else "Look at a box")
         if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
                                  "Left arrow = wheel    Right arrow = space\n"
                                  "Up / Down = suggestions    Escape quits\n\n"
                                  "Press SPACE to start.", name="Speller"):
             return
         if recorder:
-            run_flicker(win, ui, squares, recorder)
+            from psychopy import visual
+            center = visual.TextStim(win, text="+", pos=(0, 0), color="gray", height=.06)
+            run_flicker(win, ui, squares, recorder, threshold=args.threshold,
+                        manual=args.manual, overlay=[center])
         else:
             run_keys(win, ui, squares)
     except KeyboardInterrupt:
         print("Stopped: Ctrl+C in the terminal.")
     finally:
         if recorder:
+            if args.save:
+                recorder.request_save()
+                time.sleep(1.0)          # let the child write raw.npz before it is told to stop
             recorder.stop()
             recorder.join(timeout=10)
         win.close()

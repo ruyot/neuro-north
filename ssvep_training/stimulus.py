@@ -8,6 +8,7 @@ import numpy as np
 from psychopy import core, event, visual
 
 from . import config as cfg
+from .timing import frame_is_on, frames_per_cycle
 
 _BLACK = [-1, -1, -1]
 _WHITE = [1, 1, 1]
@@ -34,6 +35,21 @@ def build_window(fullscreen: bool = FULLSCREEN) -> visual.Window:
     win.refreshThreshold = 1 / cfg.EXPECTED_REFRESH_HZ + 0.004
     win.recordFrameIntervals = False
     _bring_to_front(win)
+    refresh = win.getActualFrameRate(nIdentical=30, nMaxFrames=240)
+    if refresh is None:
+        win.close()
+        raise RuntimeError("Cannot measure stable display refresh; use a fixed refresh rate")
+    try:
+        for f in cfg.STIMULUS_FREQUENCIES:
+            frames_per_cycle(f, refresh)
+    except ValueError:
+        win.close()
+        raise
+    win.ssvep_refresh = refresh
+    win.refreshThreshold = 1.5 / refresh
+    print(f"[screen] measured refresh {refresh:.3f} Hz; " + ", ".join(
+        f"{f:g} Hz = {frames_per_cycle(f, refresh)} frames/cycle"
+        for f in cfg.STIMULUS_FREQUENCIES))
     return win
 
 
@@ -189,7 +205,7 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
     if 0 <= target_idx < len(cues):
         clock.reset()
         while clock.getTime() < cfg.CUE_DURATION:
-            _draw_blank(squares, overlay)
+            draw_blank(squares, overlay)
             cues[target_idx].draw()
             win.flip()
             if _escape_pressed():
@@ -203,14 +219,17 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
     gc.disable()
     try:
         marked = False
+        frame = 0
         clock.reset()
         while clock.getTime() < cfg.FLICKER_DURATION:
-            _flicker_frame(squares, freqs, clock.getTime())
+            flicker_frame(squares, freqs, frame, win.ssvep_refresh)
             for stim in overlay:
                 stim.draw()
+            if not marked:
+                win.callOnFlip(recorder.mark_onset, marker_code)
             win.flip()
+            frame += 1
             if not marked:                    # first flicker frame is now on screen
-                recorder.mark_onset(marker_code)
                 marked = True
             if _escape_pressed():
                 print("[trial] Escape during flicker")
@@ -223,33 +242,27 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
         print(f"[warn] {dropped} late frame(s) during flicker - timing slipped slightly this trial")
 
     # --- REST ------------------------------------------------------------ #
-    _draw_blank(squares, overlay)
+    draw_blank(squares, overlay)
     win.flip()
     core.wait(cfg.INTER_TRIAL_INTERVAL)
     return True
 
 
-def flicker_frame(squares, freqs, t: float) -> None:
-    """Draw one flicker frame at absolute time t. Callers that keep a clock
-    running across selections get an unbroken, phase-continuous flicker."""
+def flicker_frame(squares, freqs, frame: int, refresh: float) -> None:
+    """Draw a deterministic frame pattern, avoiding sine-zero clock jitter."""
     for sq, f in zip(squares, freqs):
-        sq.fillColor = _WHITE if is_on(f, t) else _BLACK
+        sq.fillColor = _WHITE if frame_is_on(f, frame, refresh) else _BLACK
         sq.draw()
 
 
-def _flicker_frame(squares, freqs, t: float) -> None:
-    for sq, f in zip(squares, freqs):
-        sq.fillColor = _WHITE if is_on(f, t) else _BLACK
-        sq.draw()
+def _escape_pressed() -> bool:
+    return "escape" in event.getKeys(keyList=["escape"])
 
 
-def _draw_blank(squares, overlay=()) -> None:
+def draw_blank(squares, overlay=()) -> None:
+    """Squares dark, overlay still drawn. The rest/cue screen between trials."""
     for sq in squares:
         sq.fillColor = _BLACK
         sq.draw()
     for stim in overlay:
         stim.draw()
-
-
-def _escape_pressed() -> bool:
-    return "escape" in event.getKeys(keyList=["escape"])

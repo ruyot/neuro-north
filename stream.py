@@ -75,12 +75,25 @@ def enable_eeg_channels(board, channels):
 
 def clean(win, rate):
     """Strip mains hum and out-of-band junk. Filters run in-place, per channel."""
-    out = np.ascontiguousarray(win, dtype=np.float64)
+    out = np.array(win, dtype=np.float64, order="C", copy=True)
     for ch in out:
         DataFilter.remove_environmental_noise(ch, rate, NoiseTypes.SIXTY.value)
         DataFilter.perform_bandpass(ch, rate, 1.0, 40.0, 4,
                                     FilterTypes.BUTTERWORTH.value, 0.0)
     return out
+
+
+def diagnostic_window(raw, rate, samples, filtered=False):
+    """Score a full window after four seconds of causal-filter history.
+
+    Refiltering a rolling buffer resets the filter every call. Its leading
+    transient must never be included in the reported RMS or spectrum.
+    """
+    history = 4 * rate if filtered else 0
+    if raw.shape[1] < history + samples:
+        return None
+    segment = raw[:, -(history + samples):]
+    return clean(segment, rate)[:, history:] if filtered else segment
 
 
 def cca_reference(f, rate, n, harmonics=2):
@@ -97,14 +110,27 @@ def cca_reference(f, rate, n, harmonics=2):
 def cca_score(X, Y):
     """Largest canonical correlation between EEG X (ch x n) and reference Y.
 
-    Solved via QR + SVD rather than inverting covariances: same answer, but it
-    does not blow up when two channels are nearly identical, which happens
-    whenever electrodes share a common-mode signal.
+    Uses only nonzero singular directions. QR without rank truncation invents
+    extra directions for flat/duplicate channels and can correlate those with
+    a reference even when no EEG signal exists.
     """
-    X = X - X.mean(axis=1, keepdims=True)
-    Y = Y - Y.mean(axis=1, keepdims=True)
-    qx, _ = np.linalg.qr(X.T)
-    qy, _ = np.linalg.qr(Y.T)
+    def basis(values):
+        values = np.asarray(values, dtype=float)
+        if values.ndim != 2 or not np.isfinite(values).all():
+            raise ValueError("CCA requires finite channels-by-samples arrays")
+        centered = values - values.mean(axis=1, keepdims=True)
+        scale = np.linalg.norm(centered, axis=1)
+        centered = centered[scale > 0] / scale[scale > 0, None]
+        if not centered.size:
+            return np.empty((values.shape[1], 0))
+        u, singular, _ = np.linalg.svd(centered.T, full_matrices=False)
+        return u[:, singular > singular[0] * 1e-10]
+
+    if X.shape[1] != Y.shape[1]:
+        raise ValueError("EEG and reference sample counts differ")
+    qx, qy = basis(X), basis(Y)
+    if not qx.shape[1] or not qy.shape[1]:
+        return 0.0
     sv = np.linalg.svd(qx.T @ qy, compute_uv=False)
     return float(np.clip(sv[0], 0.0, 1.0))
 
@@ -205,6 +231,8 @@ def main():
     ap.add_argument("--channels", default="",
                     help="only enable/show these, e.g. 2,3,6,7 (default: all 8)")
     args = ap.parse_args()
+    if args.window < 2:
+        ap.error("--window must be at least 2 samples")
 
     if args.quiet:
         BoardShim.disable_board_logger()
@@ -248,6 +276,7 @@ def main():
         board.start_stream()      # 4. flushes serial, then samples flow into a ring buffer
         empty = 0
         roll = None               # rolling window, needed for any useful fft
+        required = args.window + (4 * rate if args.filter else 0)
 
         # 5. Drain the buffer twice a second and print the newest sample.
         end = time.time() + args.seconds
@@ -269,15 +298,18 @@ def main():
             # 0.5s of data only resolves 2 Hz, too coarse to tell 60 Hz from
             # drift, and too short for the filters to settle. Keep ~2s rolling.
             win = data[eeg_rows, :]
-            roll = win if roll is None else np.hstack([roll, win])[:, -args.window:]
-            shown = clean(roll, rate) if args.filter else roll
+            roll = (win if roll is None else np.hstack([roll, win]))[:, -required:]
+            shown = diagnostic_window(roll, rate, args.window, args.filter)
+            if shown is None:
+                print(f"  ...collecting analysis window/history: {roll.shape[1]}/{required} samples")
+                continue
             rms = np.sqrt(np.mean((shown - shown.mean(axis=1, keepdims=True)) ** 2, axis=1))
             eeg = " ".join(f"{v:8.0f}" for v in rms)
             tag = "filtered" if args.filter else "rms"
             line = f"[{data.shape[1]:3d}] {tag}: {eeg}"
-            if args.fft and roll.shape[1] >= 128:
+            if args.fft and shown.shape[1] >= 128:
                 line += "  " + describe_spectrum(shown, rate)
-            if targets and roll.shape[1] >= 128:
+            if targets and shown.shape[1] >= 128:
                 line += "  " + ssvep_snr(shown, rate, targets, labels)
                 line += "  " + cca_decode(shown, rate, targets)
             if args.real:

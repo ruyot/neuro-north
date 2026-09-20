@@ -36,6 +36,13 @@ def session_meta(board) -> dict:
         "frequencies": cfg.STIMULUS_FREQUENCIES,
         "letters": cfg.TARGET_LETTERS,
         "flicker_duration": cfg.FLICKER_DURATION,
+        "processing": {"visual_latency": cfg.VISUAL_LATENCY, "gaze_duration": cfg.GAZE_DURATION,
+                       "filter_history": cfg.FILTER_HISTORY, "filter_band": cfg.FILTER_BAND,
+                       "cca_bands": cfg.CCA_BANDS, "confidence_threshold": cfg.CONFIDENCE_THRESHOLD,
+                       "decoy_frequencies": list(cfg.DECOY_FREQUENCIES)},
+        "stimulus_method": "integer_frame_cycles_v1",
+        "montage_note": "names are configured labels; physical placement must be verified",
+
         "marker_scheme": "block*10 + target + 1; live trials = %d" % cfg.LIVE_MARKER,
     }
 
@@ -76,23 +83,32 @@ def flicker_samples(rate: int) -> int:
     return int(round(cfg.FLICKER_DURATION * rate))
 
 
-def analysis_slice(rate: int) -> slice:
-    """Samples after the flicker onset that get classified: skip latency, keep GAZE_DURATION."""
+def analysis_slice(rate: int, gaze: float | None = None) -> slice:
+    """Samples after the flicker onset that get classified: skip latency, keep `gaze`
+    seconds (GAZE_DURATION by default). Live selections grow this until the pick
+    is confident, so it is not always the configured value."""
     start = int(round(cfg.VISUAL_LATENCY * rate))
-    return slice(start, start + int(round(cfg.GAZE_DURATION * rate)))
+    gaze = cfg.GAZE_DURATION if gaze is None else gaze
+    return slice(start, start + int(round(gaze * rate)))
 
 
-def epoch_at(eeg: np.ndarray, onset: int, rate: int, full: bool = False) -> np.ndarray | None:
+def epoch_at(eeg: np.ndarray, onset: int, rate: int, full: bool = False,
+             gaze: float | None = None, flicker_duration: float | None = None) -> np.ndarray | None:
     """Filtered trial starting at sample `onset` of `eeg` (channels x samples).
 
     Returns (samples, channels): the analysis window, or the whole flicker if
     `full`. None if there isn't enough history before or flicker after `onset`.
     """
-    hist, flick = history_samples(rate), flicker_samples(rate)
-    if onset < hist or onset + flick > eeg.shape[1]:
+    # Only wait for what the returned window needs: the full flicker for a
+    # spectrum, but just the analysis window for classification. Live selections
+    # would otherwise sit idle for the difference on every letter.
+    hist = history_samples(rate)
+    window = analysis_slice(rate, gaze)
+    need = int(round(flicker_duration * rate)) if full and flicker_duration is not None else (flicker_samples(rate) if full else window.stop)
+    if onset < hist or onset + need > eeg.shape[1]:
         return None
-    filtered = stream.clean(eeg[:, onset - hist:onset + flick], rate)[:, hist:]
-    return (filtered if full else filtered[:, analysis_slice(rate)]).T
+    filtered = stream.clean(eeg[:, onset - hist:onset + need], rate)[:, hist:]
+    return (filtered if full else filtered[:, window]).T
 
 
 @dataclass
@@ -127,7 +143,13 @@ def load_trials(path: str, full: bool = False) -> Trials:
         decoded = decode_marker(markers[onset], len(freqs))
         if decoded is None:
             continue
-        epoch = epoch_at(eeg, onset, rate, full)
+        # Never let today's longer baseline include an old recording's dark rest.
+        recorded_flicker = meta["flicker_duration"]
+        gaze = min(cfg.GAZE_DURATION, recorded_flicker - cfg.VISUAL_LATENCY)
+        if gaze <= 0:
+            skipped += 1
+            continue
+        epoch = epoch_at(eeg, onset, rate, full, gaze=gaze, flicker_duration=recorded_flicker)
         if epoch is None:
             skipped += 1
             continue
