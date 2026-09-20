@@ -1,6 +1,6 @@
 # Neuro North
 
-![Screenshot of Neuro North App](https://file%2B.vscode-resource.vscode-cdn.net/Users/mikavohl/Projects/htn/neuro-north-main/NeuroNorth.png?version%3D1789904316274)
+![Screenshot of Neuro North App](NeuroNorth.png)
 
 Neuro North is a local [SSVEP](https://en.wikipedia.org/wiki/Steady_state_visually_evoked_potential) communication speller for the [NeuroPawn Knight EEG
 board](https://www.neuropawn.tech/imu-knight-board/). It combines real-time CCA or TRCA classification with a probabilistic
