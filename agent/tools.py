@@ -98,8 +98,9 @@ SCHEMAS = [
                 "type into a box (a search field, a form), click something, scroll, "
                 "go back, or re-read it. This is how a request continues from the "
                 "current page -- 'search for x' with Google already open, 'click the "
-                "first story', 'scroll down'. The page text in the most recent tool "
-                "result is what is on screen right now; work from it."
+                "first story', 'scroll down'. The most recent tool result holds the "
+                "page text AND a numbered 'clickable' list; both describe what is on "
+                "screen right now, so work from them rather than guessing."
             ),
             "parameters": {
                 "type": "object",
@@ -111,12 +112,14 @@ SCHEMAS = [
                     },
                     "target": {
                         "type": "string",
-                        "description": "For click: the visible text of the link or "
-                                       "button, copied from the page text you were "
-                                       "given. For type: which box to type in, named "
-                                       "by its placeholder or label (e.g. 'Search'); "
-                                       "empty picks the page's main text box. Empty "
-                                       "for every other action.",
+                        "description": "For click: either the NUMBER of an entry in "
+                                       "the 'clickable' list you were given -- this is "
+                                       "how a vague request resolves, 'the first link' "
+                                       "being its first entry -- or the visible text of "
+                                       "the link or button. For type: which box to type "
+                                       "in, named by its placeholder or label (e.g. "
+                                       "'Search'); empty picks the page's main text "
+                                       "box. Empty for every other action.",
                     },
                     "text": {
                         "type": "string",

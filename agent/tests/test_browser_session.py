@@ -12,7 +12,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from agent import runner
+from agent import browser, runner
 
 
 def _reply(content=None, calls=()):
@@ -108,6 +108,65 @@ class DryRun(unittest.TestCase):
         ]).status()
         self.assertEqual(status,
                          "did: open https://google.com | would create: Dentist @ 2026-09-21T15:00")
+
+
+class FakePage:
+    """Records the locator chain instead of touching a browser."""
+
+    def __init__(self, found=1, texts=()):
+        self.found, self.texts, self.chain = found, list(texts), []
+
+    def locator(self, selector):
+        self.chain.append(("locator", selector))
+        return self
+
+    def filter(self, **options):
+        self.chain.append(("filter", options))
+        return self
+
+    def nth(self, index):
+        self.chain.append(("nth", index))
+        return self
+
+    def get_by_role(self, role, name=None):
+        self.chain.append(("role", role, name))
+        return self
+
+    def get_by_text(self, text, exact=None):
+        self.chain.append(("text", text))
+        return self
+
+    def all_inner_texts(self):
+        return self.texts
+
+    def count(self):
+        return self.found
+
+    @property
+    def first(self):
+        return self
+
+
+class Clicking(unittest.TestCase):
+    def test_a_number_indexes_the_list_the_model_was_shown(self):
+        page = FakePage()
+        self.assertIsNotNone(browser._clickable(page, "3"))
+        self.assertIn(("nth", 3), page.chain)
+        self.assertNotIn("role", [step[0] for step in page.chain])
+
+    def test_text_still_prefers_a_link_over_a_wrapper(self):
+        page = FakePage()
+        browser._clickable(page, "hacker news")
+        self.assertEqual(page.chain[0], ("role", "link", "hacker news"))
+
+    def test_an_index_past_the_end_resolves_to_nothing(self):
+        self.assertIsNone(browser._clickable(FakePage(found=0), "99"))
+
+    def test_the_numbers_shown_are_the_numbers_a_click_uses(self):
+        # Unnamed clickables keep their slot: renumbering the visible ones would
+        # make "click 3" land on something the model never saw.
+        page = FakePage(texts=["", "Hacker News", "   ", "Images\n"])
+        self.assertEqual(browser._listing(page), "clickable:\n1. Hacker News\n3. Images")
 
 
 if __name__ == "__main__":

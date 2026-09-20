@@ -22,6 +22,8 @@ import webbrowser
 TIMEOUT = 15_000        # ms per action; several of these must fit AgentService's budget
 EXCERPT = 600           # characters of page text handed back to the model
 SCROLL = 700            # pixels per scroll action
+LINKS = 15              # clickable items listed for the model, with their index
+LABEL = 50              # characters of each listed item
 
 _LIVE = None            # the one open session; None until the first command
 
@@ -85,8 +87,30 @@ def _live() -> _Live:
     return _LIVE
 
 
+def _clickables(page):
+    """Everything on the page a click can land on, in document order. The
+    numbering the model is shown and the index a click resolves against MUST
+    come out of this one definition, or 'the first link' picks something else."""
+    return page.locator("a[href], button, [role=link], [role=button], "
+                        "input[type=submit], input[type=button]").filter(visible=True)
+
+
+def _listing(page) -> str:
+    """`N. text` per clickable. Without this the model cannot answer 'click the
+    first link' at all: the page excerpt alone does not say what the links are,
+    so it guesses text that is not there and the click misses."""
+    try:
+        texts = _clickables(page).all_inner_texts()
+    except Exception as exc:                      # noqa: BLE001 - a blank page is not fatal
+        return f"clickable: (could not list: {exc})"
+    listed = [f"{index}. {' '.join(text.split())[:LABEL]}"
+              for index, text in enumerate(texts) if text.strip()][:LINKS]
+    return "clickable:\n" + "\n".join(listed) if listed else "clickable: none found"
+
+
 def _state(note: str = "") -> str:
-    """What the model gets back: where we are, and what is on screen."""
+    """What the model gets back: where we are, what is on screen, and what it
+    can click by number."""
     page = _live().page
     try:
         body = page.inner_text("body")
@@ -94,7 +118,7 @@ def _state(note: str = "") -> str:
         body = f"(could not read page: {exc})"
     excerpt = " ".join(body.split())[:EXCERPT]
     head = f"{note}\n" if note else ""
-    return f"{head}{page.title()} | {page.url}\n{excerpt}"
+    return f"{head}{page.title()} | {page.url}\n{excerpt}\n{_listing(page)}"
 
 
 def open_page(url: str) -> str:
@@ -119,9 +143,14 @@ def _field(page, hint: str):
 
 
 def _clickable(page, target: str):
-    """What `target` names, or None, preferring things that can be clicked.
-    get_by_text alone matches the outermost element containing the words, often
-    a wrapper div: the click then misses or waits out the whole timeout."""
+    """What `target` names, or None. A bare number indexes the list the model was
+    just shown -- that is how a vague "the first link" resolves. Otherwise text,
+    preferring things that can actually be clicked: get_by_text alone matches the
+    outermost element containing the words, often a wrapper div, and the click
+    then misses or waits out the whole timeout."""
+    if target.strip().isdigit():
+        item = _clickables(page).nth(int(target.strip()))
+        return item if item.count() else None
     for locator in (page.get_by_role("link", name=target),
                     page.get_by_role("button", name=target),
                     page.get_by_text(target, exact=False)):
