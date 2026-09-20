@@ -82,6 +82,22 @@ class SetupTests(unittest.TestCase):
         signal = np.hstack([rest, out, np.tile(rest, 10), spike, rest, out, rest])
         self.assertEqual(feed_all(Gestures(125), signal), ['left'])
 
+    def test_integrated_return_survives_correction_before_stillness(self):
+        rest = np.full((3, 125), .01)
+        out = pulse([0, 0, 1], amplitude=2)
+        # Returning on a mixed axis passes the integrated-angle check but not
+        # the strict reverse-direction check. A correction then leaves >35%
+        # residual travel before the user finally settles (recorded regression).
+        returning = -out + pulse([1, 0, 0], amplitude=4)
+        correction = .6 * out
+        for chunk in (1, 3, 25):
+            detector = Gestures(125, profile=self.profile())
+            signal = np.hstack([rest, out+.01, returning+.01, correction+.01, rest])
+            self.assertEqual(feed_all(detector, signal, chunk), ['right'])
+            self.assertGreater(detector.travel, .35 * detector.peak_travel)
+            self.assertTrue(detector.armed)
+            self.assertEqual(feed_all(detector, out+.01, chunk), ['right'])
+
     def test_diagnostics_identify_reset_gate_without_changing_detection(self):
         import json
         detector = Gestures(125)

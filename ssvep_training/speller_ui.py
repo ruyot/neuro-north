@@ -12,7 +12,7 @@ plain method, so the IMU layer only has to call it:
     ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges
 
     python -m ssvep_training.speller_ui           # headset + latest calibration
-    python -m ssvep_training.speller_ui --keys    # no headset, no flicker: 1 / 2 pick a box
+    python -m ssvep_training.speller_ui --keys    # no headset/flicker: keyboard or mouse
 """
 
 from __future__ import annotations
@@ -84,6 +84,8 @@ class SpellerUI:
         self.language = language
         self.items: list[str] = []      # typed so far: a range ("abcdef"), a letter, or " "
         self.suggestions = ["", ""]     # top, bottom
+        self._confirmed_text = ""
+        self._tentative_text = ""
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
         self._flash_until: dict[str, float] = {}
         self._line_colors: dict[int, str] = {}
@@ -206,9 +208,17 @@ class SpellerUI:
         if reply is None:
             return
         if reply['state'] is None:
-            raise RuntimeError(reply['error'] + "; run python -m linguistic_model.prepare if weights are missing")
+            error = reply['error']
+            if "No module named 'torch'" in error or "No module named 'transformers'" in error:
+                raise RuntimeError(error + "; install linguistic_model/experiments/requirements.txt")
+            raise RuntimeError(error + "; run python -m linguistic_model.prepare if model weights are missing")
         state = reply['state']
-        done = " ".join(state['confirmed_words'])
+        confirmed = state['confirmed_words']
+        tentative = state['tentative_words']
+        resolved = [*confirmed, *tentative]
+        done = " ".join(resolved)
+        self._confirmed_text = " ".join(confirmed)
+        self._tentative_text = " ".join(tentative)
         labels = {range_name(r).upper(): r for r in RANGES}
         self.items = list(done + " " if done else "") + [labels[r] for r in state['current_ranges']]
         # A queued finish-word action may already be running. Its intermediate
@@ -293,15 +303,21 @@ class SpellerUI:
         other = self.pages[(self.page + 1) % len(self.pages)]
         _set_text(self.next_ranges, "\n".join(range_name(r) for r in other))
 
-        for stim, word in zip(self.suggestion_text, self.suggestions):
-            _set_text(stim, word or "suggestion")
-            stim.color = TEXT if word else FAINT
+        for stim, suggestion in zip(self.suggestion_text, self.suggestions):
+            _set_text(stim, suggestion or "suggestion")
+            stim.color = TEXT if suggestion else FAINT
 
         word = self.current_word()
-        done = _render(self.items[:len(self.items) - len(word)])
+        tentative = getattr(self, "_tentative_text", "")
+        if getattr(self, "language", None) and tentative:
+            done = getattr(self, "_confirmed_text", "")
+            done += " " if done else ""
+            pending = tentative + (" " if word else "") + _render(word)
+        else:
+            done = _render(self.items[:len(self.items) - len(word)])
+            pending = _render(word)
         if len(done) > MAX_TYPED_CHARS:
             done = "…" + done[-MAX_TYPED_CHARS:]
-        pending = _render(word)
         if len(pending) > MAX_TYPED_CHARS:
             pending = "…" + pending[-MAX_TYPED_CHARS:]
         _set_text(self.done_text, done)
@@ -363,6 +379,12 @@ KEY_ACTIONS = {
     "down": ("pick_suggestion", 1),
 }
 BOX_KEYS = {"1": 0, "2": 1}
+MOUSE_ACTIONS = {
+    "left": ("next_wheel",),
+    "right": ("space",),
+    "top": ("pick_suggestion", 0),
+    "bottom": ("pick_suggestion", 1),
+}
 
 
 def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
@@ -377,6 +399,19 @@ def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
             name, *args = KEY_ACTIONS[key]
             getattr(ui, name)(*args)
     return True
+
+def handle_mouse(ui: SpellerUI, squares, mouse) -> bool:
+    """Dispatch one primary-button click. Panels are on top of overlapping boxes."""
+    for panel, action in MOUSE_ACTIONS.items():
+        if ui.panels[panel].contains(mouse):
+            name, *args = action
+            getattr(ui, name)(*args)
+            return True
+    for index, square in enumerate(squares):
+        if square.contains(mouse):
+            ui.select_box(index)
+            return True
+    return False
 
 
 def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
@@ -394,12 +429,21 @@ def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
 
 
 def run_keys(win, ui: SpellerUI, squares) -> None:
-    """No board, no flicker: boxes shown dim grey, 1 / 2 pick."""
+    """No board or flicker: keyboard and primary-button clicks drive the UI."""
+    from psychopy import event
+
     for sq in squares:
         sq.fillColor = sq.lineColor = "#23262e"
+    mouse = event.Mouse(win=win)
+    mouse.setVisible(True)
+    was_pressed = bool(mouse.getPressed()[0])
     win.recordFrameIntervals = True
     try:
         while handle_keys(ui, boxes=True):
+            pressed = bool(mouse.getPressed()[0])
+            if pressed and not was_pressed:
+                handle_mouse(ui, squares, mouse)
+            was_pressed = pressed
             if getattr(ui, "language", None):
                 ui.poll_language()
             for sq in squares:
@@ -411,7 +455,8 @@ def run_keys(win, ui: SpellerUI, squares) -> None:
 
 
 def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
-                manual: bool = False, overlay=()) -> None:
+                manual: bool = False, overlay=(), decoder='cca', trca_min_peak=.1,
+                trca_below='reject') -> None:
     """One live selection, watched until it is confident enough to commit.
 
         [dark rest] -> [flicker from black, marker on frame 1] -> [dark, feedback]
@@ -533,11 +578,19 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
                     if win.nDroppedFrames > dropped_at_mark:
                         choice = -1
                         print("[hold] dropped display frame; rejecting selection")
-                    if accept_prediction(choice, sigma, threshold):
-                        ui.select_box(choice)
+                    accepted_choice = choice if accept_prediction(choice, sigma, threshold) else -1
+                    if decoder == 'trca':
+                        from .selection import trca_choice
+                        peak = recorder.last_trca_peak.value
+                        accepted_choice = trca_choice(choice, peak, trca_min_peak, trca_below)
+                        label = cfg.TARGET_LETTERS[accepted_choice] if accepted_choice >= 0 else 'none'
+                        print(f'[trca] peak={peak:.3f}; selection={label}; below-threshold policy={trca_below}')
+                    if accepted_choice >= 0:
+                        ui.select_box(accepted_choice)
                         t_fb, state = t, "feedback"
                     elif gaze >= cfg.MAX_GAZE_DURATION or choice < 0:
-                        print(f"[hold] insufficient evidence ({sigma:+.2f} decoy contrast); no selection")
+                        print('[hold] insufficient TRCA evidence or invalid trial; no selection' if decoder == 'trca'
+                              else f"[hold] insufficient evidence ({sigma:+.2f} decoy contrast); no selection")
                         t_fb, state = t, "feedback"
                     else:
                         gaze = min(gaze + cfg.GAZE_STEP, cfg.MAX_GAZE_DURATION)
@@ -567,7 +620,8 @@ def _report_frames(win) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--keys", action="store_true", help="no headset, no flicker: 1 / 2 pick a box")
+    parser.add_argument("--keys", action="store_true",
+                        help="no headset or flicker: use 1 / 2, arrows, or mouse clicks")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
     parser.add_argument("--decoder", choices=["cca", "trca"], default="cca",
@@ -578,6 +632,9 @@ def main() -> None:
     parser.add_argument("--threshold", type=float, default=cfg.CONFIDENCE_THRESHOLD,
                         help="minimum heuristic decoy contrast before a letter is typed; "
                              "0 types every selection, higher rejects more selections; accuracy must be measured")
+    parser.add_argument('--trca-min-peak', type=float, default=.10)
+    parser.add_argument('--trca-below', choices=['reject','b','winner'], default='reject',
+                        help='below threshold: reject, force right (b), or use the actual TRCA winner')
     parser.add_argument("--save", action="store_true",
                         help="record this live run to training_data/ so it can be analysed "
                              "the same way a calibration is (live trials are marked 99, unlabelled)")
@@ -591,8 +648,21 @@ def main() -> None:
     parser.add_argument("--engine", choices=["gpt2", "bigram", "off"], default="gpt2",
                         help="local word suggestions (default: gpt2); off restores range-only UI")
     parser.add_argument("--context", default="", help="optional conversation prompt for word suggestions")
-    parser.add_argument("--evidence-session", help="matching labeled CCA validation for range uncertainty (default: latest matching)")
+    parser.add_argument("--evidence-session", help="matching decoder validation for range uncertainty (default: latest matching)")
+    parser.add_argument("--stimulus", choices=["flicker", "motion"], default=cfg.STIMULUS_MODE)
+    parser.add_argument('--experimental-layout', choices=list(cfg.LAYOUT_PRESETS), default='current',
+                        help='live visual experiment using the existing model/evidence; accuracy must be rechecked')
     args = parser.parse_args()
+    cfg.configure_stimulus(args.stimulus)
+    cfg.configure_layout(args.experimental_layout)
+    if args.experimental_layout != 'current':
+        print(f'[layout] experimental {args.experimental_layout}: existing model and autocomplete '
+              'reliability were measured with the original visuals, not this layout')
+    import math
+    if not math.isfinite(args.trca_min_peak):
+        parser.error('--trca-min-peak must be finite')
+    if args.trca_below != 'reject' and args.decoder != 'trca':
+        parser.error('--trca-below b/winner requires --decoder trca')
     if cfg.N_TARGETS != 2:
         parser.error(f"the speller has 2 boxes; config.py has {cfg.N_TARGETS} targets")
 
@@ -634,11 +704,13 @@ def main() -> None:
         print(f"{args.decoder.upper()} | channels {channels} (from {source})")
         if args.engine != "off":
             from .language import RangeEvidence
-            if args.decoder != "cca" or args.threshold != cfg.CONFIDENCE_THRESHOLD:
-                parser.error("language evidence currently matches default-threshold CCA; use --engine off for other settings")
+            if args.decoder == 'cca' and args.threshold != cfg.CONFIDENCE_THRESHOLD:
+                parser.error("CCA language evidence requires the default CCA threshold")
+            policy = dict(decoder=args.decoder, calibration_session=session,
+                          min_peak=args.trca_min_peak, below=args.trca_below)
             try:
-                evidence = (RangeEvidence.from_validation(args.evidence_session, channels)
-                            if args.evidence_session else RangeEvidence.latest(channels))
+                evidence = (RangeEvidence.from_validation(args.evidence_session, channels, **policy)
+                            if args.evidence_session else RangeEvidence.latest(channels, **policy))
             except (OSError, KeyError, ValueError) as exc:
                 parser.error(str(exc))
             print(f"[language] provisional range reliability from {evidence.samples} accepted trials: {evidence.source}")
@@ -663,9 +735,7 @@ def main() -> None:
             recorder.start()
         win = build_window(fullscreen=not args.windowed)
         if recorder:
-            if not wait_for_key(win, f"This screen FLASHES at {min(cfg.STIMULUS_FREQUENCIES):g}-"
-                                     f"{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\nDo not use it if you have "
-                                     "epilepsy or have ever had a seizure.\n\nPress SPACE to continue."):
+            if not wait_for_key(win, cfg.stimulus_warning()):
                 return
             if not wait_for_board(win, recorder, "Setting up the board..."):
                 return
@@ -679,19 +749,28 @@ def main() -> None:
                     return
                 ui.poll_language()
                 show_message(win, "Loading local word suggestions...\n\nEscape quits.")
-        how = ("1 / 2 = left / right box" if args.keys else
-               "SPACE, then look at a box" if args.manual else "Look at a box")
-        if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
-                                 "Head left / right = wheel / finish word\n"
-                                 "Head up / down = accept suggestion\n"
-                                 "Arrow keys also work. Escape quits.\n\n"
-                                 "Press SPACE to start.", name="Speller"):
+        if args.keys:
+            instructions = ("1 / 2 or click a box to select its letter range.\n\n"
+                            "Arrow keys or the side panels change wheel / end a word.\n"
+                            "Use the right action again with no ranges to commit the sentence.\n"
+                            "Up / down or the top / bottom panels accept suggestions.")
+        else:
+            how = "SPACE, then look at a box" if args.manual else "Look at a box"
+            instructions = (f"{how}: types its letters as one item.\n\n"
+                            "Head left / right = wheel / finish word\n"
+                            "Head up / down = accept suggestion\n"
+                            + ("Right again with no ranges = commit sentence\n"
+                               "Blue words may change as you continue.\n" if language else "") +
+                            "Arrow keys also work.")
+        if not wait_for_key(win, f"Speller\n\n{instructions}\nEscape quits.\n\n"
+                                 "Press SPACE or click to start.", name="Speller"):
             return
         if recorder:
             from psychopy import visual
             center = visual.TextStim(win, text="+", pos=(0, 0), color="gray", height=.06)
             run_flicker(win, ui, squares, recorder, threshold=args.threshold,
-                        manual=args.manual, overlay=[center])
+                        manual=args.manual, overlay=[center], decoder=args.decoder,
+                        trca_min_peak=args.trca_min_peak, trca_below=args.trca_below)
         else:
             run_keys(win, ui, squares)
     except KeyboardInterrupt:
@@ -710,6 +789,11 @@ def main() -> None:
         if recorder and args.save and os.path.isdir(live_dir):
             with open(os.path.join(live_dir, "language.json"), "w") as f:
                 json.dump({"engine": args.engine, "context": args.context,
+                           "decode_mode": "sentence-beam" if language else None,
+                           "confirmed_text": getattr(ui, '_confirmed_text', '') if ui else '',
+                           "tentative_text": getattr(ui, '_tentative_text', '') if ui else '',
+                           'decoder': args.decoder, 'calibration_session': args.session,
+                           'trca_min_peak': args.trca_min_peak, 'trca_below': args.trca_below,
                            "text": ui.text if ui else "",
                            "evidence_session": evidence.source if evidence else None,
                            "accepted_trials": evidence.samples if evidence else None,

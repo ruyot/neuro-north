@@ -40,7 +40,14 @@ def session_meta(board) -> dict:
                        "filter_history": cfg.FILTER_HISTORY, "filter_band": cfg.FILTER_BAND,
                        "cca_bands": cfg.CCA_BANDS, "confidence_threshold": cfg.CONFIDENCE_THRESHOLD,
                        "decoy_frequencies": list(cfg.DECOY_FREQUENCIES)},
-        "stimulus_method": "integer_frame_cycles_v1",
+        "stimulus_method": cfg.stimulus_method(),
+        "experimental_layout": cfg.EXPERIMENTAL_LAYOUT,
+        "target_geometry": {"x": cfg.TARGET_X, "size_norm": list(cfg.TARGET_SIZE)},
+        "stimulus_details": ({"frequency_units": "direction_reversals_per_second",
+                              "full_cycle_hz": [f / 2 for f in cfg.STIMULUS_FREQUENCIES],
+                              "spatial_cycles": cfg.MOTION_SPATIAL_CYCLES, "phase_amplitude_cycles": .25,
+                              "contrast": .8, "mask": "raisedCos"}
+                             if cfg.STIMULUS_MODE == "motion" else {}),
         "montage_note": "names are configured labels; physical placement must be verified",
 
         "marker_scheme": "block*10 + target + 1; live trials = %d" % cfg.LIVE_MARKER,
@@ -71,7 +78,9 @@ def latest_session() -> str | None:
         if not (os.path.exists(info) and os.path.exists(os.path.join(path, "raw.npz"))):
             continue
         with open(info) as f:
-            if json.load(f).get("n_markers", 0) > 0:
+            meta = json.load(f)
+            if (meta.get("n_markers", 0) > 0
+                    and meta.get("stimulus_method") == cfg.stimulus_method()):
                 return path
     return None
 
@@ -128,14 +137,25 @@ class Trials:
         return len(self.freqs)
 
 
-def load_trials(path: str, full: bool = False) -> Trials:
+def load_trials(path: str, full: bool = False, reject_bad: bool = False, channels=None) -> Trials:
     """Every labelled calibration trial in a session, cut with epoch_at().
 
     Targets come from the session's own session.json, so a session recorded with
     a different frequency set still gets labelled correctly.
     """
     data, meta = load_session(path)
-    rate, eeg = meta["rate"], data[meta["eeg_rows"]]
+    trial_status = None
+    if reject_bad:
+        status_file = os.path.join(path, 'calibration.json')
+        if not os.path.exists(status_file):
+            raise ValueError('Calibration has no display-quality log; collect a fresh calibration')
+        with open(status_file) as source:
+            trial_status = {r['marker']: r for r in json.load(source)['trials']}
+    rows = list(meta['eeg_rows']) if channels is None else list(channels)
+    if not rows or len(set(rows)) != len(rows) or not set(rows) <= set(meta['eeg_rows']):
+        raise ValueError('Requested channels must be a unique nonempty subset of the recorded EEG channels')
+    names = [meta['names'][meta['eeg_rows'].index(row)] for row in rows]
+    rate, eeg = meta["rate"], data[rows]
     freqs, letters = meta["frequencies"], meta["letters"]
     markers = data[meta["marker_row"]]
     epochs, targets, blocks, skipped = [], [], [], 0
@@ -143,6 +163,14 @@ def load_trials(path: str, full: bool = False) -> Trials:
         decoded = decode_marker(markers[onset], len(freqs))
         if decoded is None:
             continue
+        if trial_status is not None:
+            from .quality import trial_transport_ok
+            status = trial_status.get(int(round(markers[onset])))
+            if (not status or not status['completed'] or status['late_frames']
+                    or not trial_transport_ok(data, onset, rate,
+                                              analysis_slice(rate).stop, history_samples(rate))):
+                skipped += 1
+                continue
         # Never let today's longer baseline include an old recording's dark rest.
         recorded_flicker = meta["flicker_duration"]
         gaze = min(cfg.GAZE_DURATION, recorded_flicker - cfg.VISUAL_LATENCY)
@@ -153,9 +181,12 @@ def load_trials(path: str, full: bool = False) -> Trials:
         if epoch is None:
             skipped += 1
             continue
+        if reject_bad and (not np.isfinite(epoch).all() or np.any(np.std(epoch, axis=0) < 1e-9)):
+            skipped += 1
+            continue
         epochs.append(epoch)
         blocks.append(decoded[0])
         targets.append(decoded[1])
-    stacked = np.stack(epochs, axis=2) if epochs else np.empty((0, len(meta["eeg_rows"]), 0))
-    return Trials(stacked, np.array(targets), np.array(blocks), rate, meta["names"], freqs, letters,
-                  list(meta["eeg_rows"]), skipped)
+    stacked = np.stack(epochs, axis=2) if epochs else np.empty((0, len(rows), 0))
+    return Trials(stacked, np.array(targets, dtype=int), np.array(blocks, dtype=int), rate, names, freqs, letters,
+                  rows, skipped)

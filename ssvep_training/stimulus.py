@@ -8,7 +8,7 @@ import numpy as np
 from psychopy import core, event, visual
 
 from . import config as cfg
-from .timing import frame_is_on, frames_per_cycle
+from .timing import frame_is_on, frames_per_cycle, motion_phase
 
 _BLACK = [-1, -1, -1]
 _WHITE = [1, 1, 1]
@@ -41,15 +41,19 @@ def build_window(fullscreen: bool = FULLSCREEN) -> visual.Window:
         raise RuntimeError("Cannot measure stable display refresh; use a fixed refresh rate")
     try:
         for f in cfg.STIMULUS_FREQUENCIES:
-            frames_per_cycle(f, refresh)
+            frames_per_cycle(f / 2 if cfg.STIMULUS_MODE == "motion" else f, refresh)
     except ValueError:
         win.close()
         raise
     win.ssvep_refresh = refresh
-    win.refreshThreshold = 1.5 / refresh
-    print(f"[screen] measured refresh {refresh:.3f} Hz; " + ", ".join(
-        f"{f:g} Hz = {frames_per_cycle(f, refresh)} frames/cycle"
-        for f in cfg.STIMULUS_FREQUENCIES))
+    if cfg.STIMULUS_MODE == "motion":
+        print(f"[screen] measured refresh {refresh:.3f} Hz; MOTION: " + ", ".join(
+            f"{f:g} reversals/s = {frames_per_cycle(f / 2, refresh)} frames/full motion cycle"
+            for f in cfg.STIMULUS_FREQUENCIES))
+    else:
+        print(f"[screen] measured refresh {refresh:.3f} Hz; " + ", ".join(
+            f"{f:g} Hz = {frames_per_cycle(f, refresh)} frames/cycle"
+            for f in cfg.STIMULUS_FREQUENCIES))
     return win
 
 
@@ -107,6 +111,11 @@ def build_stimuli(win: visual.Window):
     for pos, letter in zip(positions, cfg.TARGET_LETTERS):
         squares.append(visual.Rect(win, units="norm", width=size[0], height=size[1], pos=pos,
                                    anchor="center", fillColor=_BLACK, lineColor=_BLACK))
+        if cfg.STIMULUS_MODE == "motion":
+            # Fixed aperture/contrast; only spatial phase moves, not brightness.
+            squares[-1].motion_grating = visual.GratingStim(
+                win, units="norm", pos=pos, size=size, tex="sin", mask="raisedCos",
+                sf=(cfg.MOTION_SPATIAL_CYCLES, 0), contrast=.8, color=1, phase=0, autoLog=False)
         cues.append(visual.Rect(win, units="norm", width=size[0] * 1.15, height=size[1] * 1.15,
                                 pos=pos, anchor="center", fillColor=None, lineColor="red", lineWidth=8))
         # Letter outside the square (above it, or below for a bottom row) so it
@@ -251,8 +260,12 @@ def run_trial(win, squares, cues, target_idx: int, recorder, marker_code: int,
 def flicker_frame(squares, freqs, frame: int, refresh: float) -> None:
     """Draw a deterministic frame pattern, avoiding sine-zero clock jitter."""
     for sq, f in zip(squares, freqs):
-        sq.fillColor = _WHITE if frame_is_on(f, frame, refresh) else _BLACK
-        sq.draw()
+        if hasattr(sq, "motion_grating"):
+            sq.motion_grating.phase = (motion_phase(f, frame, refresh), 0)
+            sq.motion_grating.draw()
+        else:
+            sq.fillColor = _WHITE if frame_is_on(f, frame, refresh) else _BLACK
+            sq.draw()
 
 
 def _escape_pressed() -> bool:

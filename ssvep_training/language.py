@@ -1,7 +1,7 @@
 """Asynchronous adapter from committed range choices to Mika's local decoder.
 
-CCA correlations are NOT probabilities. For EEG input we estimate P(true target |
-accepted pick) from a matching labeled validation, with add-one smoothing. These
+Decoder scores are NOT probabilities. For EEG input we estimate P(true target |
+policy pick) from a matching labeled validation, with add-one smoothing. These
 small-sample estimates are provisional, not a claim of calibrated certainty.
 """
 from __future__ import annotations
@@ -19,10 +19,13 @@ class RangeEvidence:
         self.source, self.samples = source, samples
 
     @classmethod
-    def from_validation(cls, path, channels):
+    def from_validation(cls, path, channels, decoder='cca', calibration_session=None,
+                        min_peak=.1, below='reject'):
         path = Path(path)
         metadata = json.loads((path / 'session.json').read_text())
         validation = json.loads((path / 'validation.json').read_text())
+        if validation.get('swap_comparison'):
+            raise ValueError('Mixed-layout diagnostic cannot supply fixed-layout language evidence')
         processing = metadata['processing']
         expected = {'gaze_duration': cfg.GAZE_DURATION, 'visual_latency': cfg.VISUAL_LATENCY,
                     'filter_band': list(cfg.FILTER_BAND), 'cca_bands': cfg.CCA_BANDS,
@@ -30,18 +33,29 @@ class RangeEvidence:
                     'filter_history': cfg.FILTER_HISTORY,
                     'decoy_frequencies': list(cfg.DECOY_FREQUENCIES)}
         if (metadata['frequencies'] != list(cfg.STIMULUS_FREQUENCIES)
+                or metadata.get('experimental_layout', 'current') != 'current'
+                or metadata.get('stimulus_method', 'integer_frame_cycles_v1') != cfg.stimulus_method()
                 or metadata['eeg_rows'] != channels
                 or any(processing.get(k) != value for k, value in expected.items())
-                or validation.get('decoder') != 'cca'
-                or validation.get('threshold') != cfg.CONFIDENCE_THRESHOLD):
-            raise ValueError('Validation frequencies/channels/processing do not match live CCA')
+                or validation.get('decoder') != decoder):
+            raise ValueError('Validation frequencies/channels/processing do not match live decoder')
+        if decoder == 'cca' and validation.get('threshold') != cfg.CONFIDENCE_THRESHOLD:
+            raise ValueError('CCA validation threshold differs')
+        if decoder == 'trca':
+            if (not calibration_session or not validation.get('calibration_session')
+                    or Path(validation['calibration_session']).resolve() != Path(calibration_session).resolve()
+                    or validation.get('trca_min_peak') != min_peak):
+                raise ValueError('TRCA validation calibration/peak threshold differs')
         counts = [[1., 1.], [1., 1.]]  # predicted target -> true target, add-one smoothing
         truths = [1., 1.]
         samples = 0
         for row in validation['trials']:
-            if (row['target'] in (0, 1) and row['prediction'] in (0, 1)
-                    and row['accepted'] and not row['late_frames']):
-                counts[row['prediction']][row['target']] += 1
+            prediction = row['prediction'] if row['accepted'] else -1
+            if decoder == 'trca':
+                from .selection import trca_choice
+                prediction = trca_choice(row['prediction'], row.get('trca_peak'), min_peak, below)
+            if (row['target'] in (0, 1) and prediction in (0, 1) and not row['late_frames']):
+                counts[prediction][row['target']] += 1
                 truths[row['target']] += 1
                 samples += 1
         if min(truths) <= 1 or samples < 6:
@@ -50,10 +64,10 @@ class RangeEvidence:
                    [sum(row[i] for row in counts)/(samples+4) for i in (0, 1)], str(path), samples)
 
     @classmethod
-    def latest(cls, channels):
+    def latest(cls, channels, **policy):
         for path in sorted(Path(cfg.TRAINING_DATA_DIR).glob('validation_*'), reverse=True):
             try:
-                return cls.from_validation(path, channels)
+                return cls.from_validation(path, channels, **policy)
             except (OSError, KeyError, ValueError):
                 continue
         raise ValueError('No matching labeled validation for range uncertainty; use --engine off '
@@ -81,6 +95,7 @@ class LanguageCore:
             # CPU avoids competing with PsychoPy's rendering for the GPU.
             self.simulator._scorers[engine] = CausalCandidateScorer(ENGINE_MODELS[engine][1], device='cpu')
         self.simulator.set_engine(engine)
+        self.simulator.set_decode_mode('sentence-beam')
         self.simulator.set_context_prefix(context)
 
     def apply(self, action, payload):
@@ -100,6 +115,8 @@ class LanguageCore:
         elif action == 'boundary':
             if simulator.decoder.observations:
                 simulator.boundary()
+            elif simulator.tentative_words:
+                simulator.finish_sentence()
             simulator.page_index = 0
         elif action == 'undo':
             simulator.backspace()
@@ -108,8 +125,9 @@ class LanguageCore:
 
     def snapshot(self):
         state = self.simulator.state()
-        return {key: state[key] for key in ('confirmed_words', 'current_ranges', 'candidates',
-                                             'engine', 'last_event')}
+        return {key: state[key] for key in ('confirmed_words', 'tentative_words',
+                                             'current_ranges', 'candidates', 'engine',
+                                             'decode_mode', 'can_finish', 'last_event')}
 
 
 def _worker(requests, replies, engine, context):

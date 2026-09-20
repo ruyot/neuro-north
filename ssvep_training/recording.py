@@ -39,12 +39,15 @@ class RecordingProcess(Process):
         self.predict_session = predict_session
 
         self.ready = Event()
+        self.flat_eeg_mask = Value('i', 0)
         self.failed = Value("b", False)
         self.marker_code = Value("i", 0)
         self.onset_count = Value("i", 0)
         self.save_count = Value("i", 0)
         self.predict_count = Value("i", 0)
         self.last_prediction = Value("i", -1)
+        self.last_trca_peak = Value('d', float('nan'))
+        self.last_trca_margin = Value('d', float('nan'))
         self.last_sigma = Value("d", 0.0)      # heuristic decoy contrast of last_prediction
         self.gaze = Value("d", 0.0)            # window to classify; 0 = config default
         self.prediction_count = Value("i", 0)
@@ -205,10 +208,11 @@ class RecordingProcess(Process):
             if epoch is None:                          # flicker data not all here yet
                 return False
 
-            if not trial_transport_ok(data, int(onsets[-1]), board.rate,
+            if (not np.isfinite(epoch).all() or np.all(np.std(epoch, axis=0) < 1e-9)
+                    or not trial_transport_ok(data, int(onsets[-1]), board.rate,
                                       analysis_slice(board.rate, gaze).stop,
-                                      history_samples(board.rate)):
-                print("[hold] packet discontinuity in trial/filter history; no prediction")
+                                      history_samples(board.rate))):
+                print("[hold] packet discontinuity or unusable EEG; no prediction")
                 self.last_prediction.value = -1
                 self.last_sigma.value = float("-inf")
                 self.prediction_version.value = pending_version
@@ -224,7 +228,12 @@ class RecordingProcess(Process):
             sigma = cca_model.confidence(epoch, board.rate, cfg.STIMULUS_FREQUENCIES, harmonics)
             picks = {"cca": int(np.argmax(scores))}
             if model is not None:
-                picks["trca"] = int(model.predict(epoch[:, :, None])[0])
+                from .trca_model import scores as trca_scores
+                template_scores = trca_scores(model, epoch)
+                picks["trca"] = int(np.argmax(template_scores))
+                ordered = np.sort(template_scores)
+                self.last_trca_peak.value = float(ordered[-1])
+                self.last_trca_margin.value = float(ordered[-1]-ordered[-2])
 
             choice = picks[self.decoder]
             # The gate describes the CCA candidate. Do not apply its evidence
@@ -259,6 +268,11 @@ class RecordingProcess(Process):
                 if not self.ready.is_set():
                     now_m = time.monotonic()
                     if recorded >= ready_samples and now_m >= ready_at:
+                        # Expose silent/disabled channels before a calibration
+                        # spends minutes collecting unusable multichannel data.
+                        initial = np.hstack(chunks)[board.eeg_rows, -board.rate:]
+                        self.flat_eeg_mask.value = sum(1 << row for row, signal in zip(board.eeg_rows, initial)
+                                                      if not np.isfinite(signal).all() or np.ptp(signal) == 0)
                         self.ready.set()
                     elif now_m > ready_at + NO_DATA_TIMEOUT:
                         print(f"[board] only {recorded} samples in "
@@ -306,15 +320,15 @@ class RecordingProcess(Process):
         """Fit TRCA on the calibration session; its targets must match today's config."""
         from . import config as cfg
         from .session import load_trials, load_session
-        from .trca_model import fit
+        from .trca_model import fit, load_calibration
 
         _, metadata = load_session(self.predict_session)
         processing = metadata.get("processing", {})
         if (processing.get("gaze_duration") != cfg.GAZE_DURATION
                 or processing.get("visual_latency") != cfg.VISUAL_LATENCY
-                or metadata.get("stimulus_method") != "integer_frame_cycles_v1"):
+                or metadata.get("stimulus_method") != cfg.stimulus_method()):
             raise ValueError("TRCA calibration timing differs or is undocumented; record a fresh calibration")
-        trials = load_trials(self.predict_session)
+        trials = load_calibration(self.predict_session)
         if [round(f, 3) for f in trials.freqs] != [round(f, 3) for f in cfg.STIMULUS_FREQUENCIES]:
             raise ValueError(f"calibration used {trials.freqs} Hz but config.py now uses "
                              f"{cfg.STIMULUS_FREQUENCIES} Hz - recalibrate.")

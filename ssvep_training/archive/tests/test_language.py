@@ -102,19 +102,23 @@ class LanguageTests(unittest.TestCase):
 
     def test_apple_acceptance_and_next_word_boundary(self):
         core = self.core()
+        self.assertEqual(core.snapshot()['decode_mode'], 'sentence-beam')
         for page, choice in [(0,0), (1,0), (1,0), (0,1), (0,0)]:
             self.select(core, page, choice)
             self.assertEqual(core.simulator.page_index, 0)
         self.assertEqual(core.snapshot()['candidates'][0]['word'], 'apple')
         core.apply('accept', {'word': 'apple'})
-        self.assertEqual(core.snapshot()['confirmed_words'], ['apple'])
+        self.assertEqual(core.snapshot()['confirmed_words'], [])
+        self.assertEqual(core.snapshot()['tentative_words'], ['apple'])
         self.assertFalse(core.snapshot()['current_ranges'])
         self.select(core, 0, 1)
         self.select(core, 0, 1)
         core.apply('boundary', {})
-        self.assertEqual(core.snapshot()['confirmed_words'], ['apple', 'hi'])
+        self.assertEqual(core.snapshot()['confirmed_words'], [])
+        self.assertEqual(core.snapshot()['tentative_words'], ['apple', 'hi'])
         core.apply('boundary', {})
         self.assertEqual(core.snapshot()['confirmed_words'], ['apple', 'hi'])
+        self.assertEqual(core.snapshot()['tentative_words'], [])
 
     def test_failed_boundary_keeps_observation(self):
         core = self.core()
@@ -188,7 +192,8 @@ class LanguageTests(unittest.TestCase):
         ui.language.submit.assert_called_once_with('accept', {'word': 'apple'})
         self.assertEqual(ui.page, 0)
         ui.page = 1  # user cycles while model is working
-        ui.language.poll.return_value = {'state': {'confirmed_words': ['apple'], 'current_ranges': [],
+        ui.language.poll.return_value = {'state': {'confirmed_words': ['apple'],
+                                                   'tentative_words': [], 'current_ranges': [],
                                                    'candidates': [{'word':'is'}, {'word':'and'}]}, 'error': None}
         ui.poll_language()
         self.assertEqual(ui.text, 'apple ')

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 from ssvep_training.head import Gestures, GESTURES
 from ssvep_training.recording import RecordingProcess
-from ssvep_training.speller_ui import handle_gestures, run_flicker, SpellerUI
+from ssvep_training.speller_ui import handle_gestures, handle_mouse, run_flicker, SpellerUI
 
 
 class HeadIntegrationTests(unittest.TestCase):
@@ -33,6 +33,37 @@ class HeadIntegrationTests(unittest.TestCase):
             handle_gestures(ui, recorder, seen)
             self.assertEqual(calls, [expected])
             self.assertEqual(recorder.selection_version.value, 1)
+
+    def test_mouse_dispatches_boxes_and_action_panels(self):
+        class HitArea:
+            def __init__(self, name):
+                self.name = name
+
+            def contains(self, mouse):
+                return mouse == self.name
+
+        calls = []
+        ui = NS(
+            panels={name: HitArea(name) for name in ("left", "right", "top", "bottom")},
+            next_wheel=lambda: calls.append(("wheel",)),
+            space=lambda: calls.append(("space",)),
+            pick_suggestion=lambda slot: calls.append(("suggestion", slot)),
+            select_box=lambda index: calls.append(("box", index)),
+        )
+        squares = [HitArea("box0"), HitArea("box1")]
+
+        expected = {
+            "left": ("wheel",),
+            "right": ("space",),
+            "top": ("suggestion", 0),
+            "bottom": ("suggestion", 1),
+            "box0": ("box", 0),
+            "box1": ("box", 1),
+        }
+        for target, action in expected.items():
+            self.assertTrue(handle_mouse(ui, squares, target))
+            self.assertEqual(calls.pop(), action)
+        self.assertFalse(handle_mouse(ui, squares, "outside"))
 
     def test_cancel_invalidates_result_even_after_next_onset(self):
         recorder = RecordingProcess()
