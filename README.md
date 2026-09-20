@@ -1,22 +1,23 @@
 # neuro-north
 
-SSVEP EEG acquisition, quality gating, and TRCA-based target classification for an 8-channel NeuroPawn Knight board (BrainFlow board id 66, 22 raw rows, nominal 125 Hz, gain 12 requested). Target/letter selection, not a free-form thought/intent decoder: TRCA always classifies to one configured flicker target; the quality gate rejects contaminated epochs before they ever reach it.
+SSVEP EEG acquisition, quality gating, and TRCA / experimental FBCCA target classification for an 8-channel NeuroPawn Knight board (BrainFlow board id 66, 22 raw rows, nominal 125 Hz, gain 12 requested). Target/letter selection, not a free-form thought/intent decoder: the quality gate rejects contaminated epochs, but neither decoder establishes intentional control during healthy idle EEG.
 
 ## Setup
 
-Create the environment only if `.venv` is absent; otherwise reuse it with the pinned requirements.
+On macOS or Linux, run these commands from the project root with `uv` installed. Create `.venv` on each laptop; do not transfer an environment between operating systems or CPU architectures. Reuse an existing compatible environment with the pinned requirements.
 
 ```
-uv venv --python /home/abuudiii/.local/bin/python3.12 .venv
+uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python -r ssvep_training/requirements.txt
 ```
 
-`brainflow==5.23.0` / `meegkit==0.2.0` are pinned; do not upgrade in place. No ASR/ICA/MNE runtime dependency is added — those stay optional offline tools. Real-board commands read the port from `PORT_PATH` in `.env`, or `--port /dev/ttyACM0` overrides it per run.
+`brainflow==5.23.0` / `meegkit==0.2.0` are pinned; do not upgrade in place. FBCCA uses these existing dependencies; no additional package or Linux desktop tool is required. Real-board commands read `PORT_PATH` from that laptop's `.env`, or accept `--port "$PORT"`. Discover its actual serial port (macOS commonly uses `/dev/cu.*`); do not copy another laptop's device path. Set `MAINS_HZ` to the site's 50 or 60 Hz before recording and use the same value for calibration, evaluation, diagnostics, and live prediction.
 
 ## Hardware-free checks (no board)
 
 ```
 .venv/bin/python -m ssvep_training.signal_quality --self-check
+.venv/bin/python -m ssvep_training.fbcca --self-check
 .venv/bin/python -m ssvep_training.head
 .venv/bin/python stream.py --seconds 3 --filter --fft
 ```
@@ -46,7 +47,7 @@ Offline inspection of any saved session (raw or legacy):
 ## Signal contract (schema v2)
 
 - Raw rows are saved untouched: all 22 SDK rows, SDK order (`raw.npz`). Filtering, quality checks, and unit conversion never mutate raw data.
-- Sessions record board id 66, nominal rate 125 Hz, `gain_requested: 12`, the pinned `brainflow`/`meegkit` versions, and the confirmed row map (EEG 1–8, packet counter 0, lead-off 9/10, IMU 11–19, host timestamp 20, marker 21). TRCA consumes BrainFlow-native units, not µV.
+- Sessions record board id 66, nominal rate 125 Hz, `gain_requested: 12`, the pinned `brainflow`/`meegkit` versions, and the confirmed row map (EEG 1–8, packet counter 0, lead-off 9/10, IMU 11–19, host timestamp 20, marker 21). All decoders consume BrainFlow-native units, not µV.
 - Selecting a channel subset (`--channels`) also removes unselected channels from the electrode bias loop (`choff_*` + `rldremove_*`), not just adds the selected ones — opening the port does not reset firmware state.
 - **Legacy sessions** stay readable by `signal_quality`/raw diagnostics, but `load_trials` refuses to train on them: no schema/baseline contract, so a new calibration recording is required, not a metadata patch.
 
@@ -91,6 +92,26 @@ Live UIs, each requiring a prior calibration session (`--port`, `--session PATH`
 ```
 
 `speller_ui --keys` (above) is the only variant that skips the headset and refresh-timing gate entirely.
+
+### Experimental NeuroKnights-informed FBCCA
+
+`--decoder trca` remains the default. `fbcca` uses two-harmonic references and rank-aware CCA, summing **all** weighted squared sub-band correlations before choosing a target. `fbcca-car` is an ablation that additionally subtracts the mean across selected EEG channels only. Both require an admitted calibration session for channel/rate/timing provenance, even though they do not learn TRCA templates. Constant or numerically zero windows produce no valid target.
+
+This selectively adapts the FBCCA idea from [NeuroKnights at the pinned revision](https://github.com/alexyurchuk/NeuroKnights/tree/53b8bbb41640de755c48b8a46e3d9a9cc93279cd), not its partial-score vote, 5.5–35 Hz preprocessing, flasher, or unwired KNN/idle sketch. Acquisition, quality gates, stimulus timing, raw units, and TRCA's inputs stay unchanged.
+
+Compare the three decoders on exactly the same admitted trials. Replace `DEV_SESSION` and `TEST_SESSION` with the actual saved folders; the latter must be a distinct recording, not a renamed/repacked copy:
+
+```
+.venv/bin/python -m ssvep_training.evaluate_trca --session DEV_SESSION --compare-fbcca --no-plot
+.venv/bin/python -m ssvep_training.evaluate_trca --session DEV_SESSION --test-session TEST_SESSION --compare-fbcca --no-plot
+.venv/bin/python -m ssvep_training.typer --port "$PORT" --session DEV_SESSION --decoder fbcca --prompt AABBAABB
+```
+
+`speller_ui` accepts the same `--decoder` choices. Results are saved as `results/compare_<development>[_to_<test>].json` under `ssvep_training`, including input provenance, rejection counts, confusion matrices, recall/balanced accuracy (%), and median per-window prediction time (ms). Unusable model outputs make that model unavailable, not a fabricated selection. Ordinary TRCA-only evaluation keeps its `eval_<session>.json` output.
+
+For a participant comparison, collect separate 24-block development and locked-test sessions with a break. Select only from development CV: require usable TRCA and FBCCA results, prefer `fbcca`, and select `fbcca-car` only if its error-free balanced accuracy is at least 5 percentage points higher than ordinary FBCCA. Freeze that choice before inspecting the held-out results. Provisional adoption requires at least 20 accepted test trials per target, no model errors, candidate balanced accuracy at least 80% and at least 5 points above TRCA, and median prediction time below 100 ms; otherwise retain TRCA. Do not automatically extend flashing to replace rejected trials. A passing candidate still needs a consented live known-prompt check, including repeated letters and rejection feedback.
+
+Software fixtures establish implementation behavior only—not reduced physiological noise, human superiority, optical timing, or idle detection. ITR is a closed-set estimate, not measured free-spelling throughput. The new code is platform-neutral and keeps model construction inside the recorder child for macOS-style `spawn`; actual macOS SDK/display/hardware execution has not been exercised here.
 
 ## Physical bring-up checklist (not yet done)
 

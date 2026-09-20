@@ -9,8 +9,9 @@ whose letter you want and it gets typed; look at the next one and so on.
     python -m ssvep_training.typer --prompt BAABAABA  # spell this
     python -m ssvep_training.typer --free             # no prompt, just type
 
-Uses the TRCA model from your latest calibration, and streams exactly the
-channels that calibration used.
+Defaults to TRCA from your latest calibration; --decoder fbcca or fbcca-car
+selects the experimental alternatives. Every decoder uses the calibration's
+exact channel selection and requires an admitted calibration session.
 
 Keys: Escape quits, Backspace deletes the last letter.
 Results are saved to results/.
@@ -50,6 +51,7 @@ def main() -> None:
     parser.add_argument("--length", type=int, default=8, help="length of the random prompt")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
+    parser.add_argument("--decoder", choices=cfg.DECODERS, default="trca", help="decoder to use (default: trca)")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
 
@@ -72,7 +74,8 @@ def main() -> None:
     with open(os.path.join(session, "session.json")) as f:
         channels = json.load(f)["eeg_rows"]
     print(f"Training on {session}  (channels {channels})")
-    recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
+    recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels,
+                                decoder=args.decoder)
     typed, picks, started = "", [], None
     win = core = None
     try:
@@ -181,7 +184,7 @@ def main() -> None:
             win.recordFrameIntervals = False
 
         if prompt and len(typed) == len(prompt):
-            summary = report(prompt, typed, time.time() - started, picks)
+            summary = report(prompt, typed, time.time() - started, picks, decoder=args.decoder)
             wait_for_key(win, summary + "\n\nPress SPACE to close.")
     except KeyboardInterrupt:
         print("Stopped: Ctrl+C in the terminal.")
@@ -199,7 +202,7 @@ def main() -> None:
             core.quit()
 
 
-def report(target: str, typed: str, elapsed: float, picks) -> str:
+def report(target: str, typed: str, elapsed: float, picks, *, decoder: str = "trca") -> str:
     """Score the run, print it, save it to results/, return the on-screen summary."""
     from .trca_model import bits_per_min
 
@@ -217,6 +220,7 @@ def report(target: str, typed: str, elapsed: float, picks) -> str:
         json.dump({"prompt": target, "typed": typed, "accuracy": accuracy,
                    "elapsed_s": round(elapsed, 2), "seconds_per_letter": round(per_pick, 2),
                    "bits_per_min": bits_per_min(accuracy, n), "picks": picks,
+                   "decoder": decoder,
                    "frequencies": cfg.STIMULUS_FREQUENCIES}, f, indent=2)
     print(f"Saved to {path}")
     return summary

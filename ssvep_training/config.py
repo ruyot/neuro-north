@@ -45,6 +45,7 @@ FILTERBANK = [
     [(30, 40), (24, 44)],
 ]
 USE_ENSEMBLE_TRCA = True
+DECODERS = ("trca", "fbcca", "fbcca-car")
 
 # Each run writes training_data/session_<time>/ with raw.npz + session.json.
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))

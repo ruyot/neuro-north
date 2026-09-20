@@ -459,6 +459,7 @@ def main() -> None:
     parser.add_argument("--keys", action="store_true", help="no headset, no flicker: 1 / 2 pick a box")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
+    parser.add_argument("--decoder", choices=cfg.DECODERS, default="trca", help="decoder to use (default: trca)")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
@@ -477,7 +478,8 @@ def main() -> None:
         with open(os.path.join(session, "session.json")) as f:
             channels = json.load(f)["eeg_rows"]
         print(f"Training on {session}  (channels {channels})")
-        recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels)
+        recorder = RecordingProcess(port=args.port, predict_session=session, channels=channels,
+                                    decoder=args.decoder)
     ui = None
     win = core = None
     try:

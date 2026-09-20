@@ -24,8 +24,10 @@ class RecordingProcess(Process):
 
     def __init__(self, port: str | None = None, session_dir: str | None = None,
                  settle: float | None = None, predict_session: str | None = None,
-                 channels=None, diagnostic: bool = False):
+                 channels=None, diagnostic: bool = False, decoder: str = "trca"):
         super().__init__()
+        if decoder not in cfg.DECODERS:
+            raise ValueError(f"Unknown decoder {decoder!r}; choose from {cfg.DECODERS}.")
         if diagnostic and predict_session is not None:
             raise ValueError("Diagnostic capture cannot also predict from a calibration.")
         if channels is not None:
@@ -43,6 +45,7 @@ class RecordingProcess(Process):
         self.port, self.channels = port, channels
         self.session_dir, self.predict_session = session_dir, predict_session
         self.settle, self.diagnostic = settle, diagnostic
+        self.decoder = decoder
         self.configured, self.ready = Event(), Event()
         self.failed = Value("b", False)
         self._events = SimpleQueue()
@@ -277,6 +280,8 @@ class RecordingProcess(Process):
             if model is not None and board.rate != self._model_rate:
                 raise ValueError(f"Calibration rate {self._model_rate} differs from live {board.rate}; recalibrate.")
             meta = session_meta(board)
+            if self.predict_session is not None:
+                meta["decoder"] = self.decoder
             baseline_samples = int(round(cfg.QUALITY_BASELINE_SECONDS * board.rate))
             try:
                 from .head import GESTURES, Gestures, gyro_rows
@@ -342,14 +347,20 @@ class RecordingProcess(Process):
 
     def _train_model(self):
         from .session import load_trials
-        from .trca_model import fit
+        from .trca_model import _require_training_trials, fit
 
         trials = load_trials(self.predict_session)
         if [round(f, 3) for f in trials.freqs] != [round(f, 3) for f in cfg.STIMULUS_FREQUENCIES]:
             raise ValueError(f"Calibration used {trials.freqs} Hz but config now uses {cfg.STIMULUS_FREQUENCIES}; recalibrate.")
         self._model_rate, self._model_rows = trials.rate, trials.rows
-        model = fit(trials)
-        print(f"[predict] TRCA trained on {trials.eeg.shape[-1]} trials from {self.predict_session}")
+        if self.decoder == "trca":
+            model = fit(trials)
+        else:
+            from .fbcca import FBCCA
+
+            _require_training_trials(trials)
+            model = FBCCA(trials.rate, trials.freqs, car=self.decoder == "fbcca-car")
+        print(f"[predict] {self.decoder}: {trials.eeg.shape[-1]} accepted calibration trials from {self.predict_session}")
         return model
 
 
