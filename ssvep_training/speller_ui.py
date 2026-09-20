@@ -724,10 +724,10 @@ def main() -> None:
     parser.add_argument("--context", default="", help="optional conversation prompt for word suggestions")
     parser.add_argument("--agent", action="store_true",
                         help="a second right edge (or Return) sends the typed message to the agent, "
-                             "which turns it into a calendar event; needs --engine gpt2")
+                             "which turns it into a calendar event or drives the browser; needs --engine gpt2")
     parser.add_argument("--agent-live", action="store_true",
-                        help="let the agent actually execute its tool calls; without this it "
-                             "reports what it WOULD do and writes nothing to your calendar")
+                        help="let the agent write to your real calendar; without this it reports "
+                             "what it WOULD create. The browser runs either way")
     parser.add_argument("--agent-tz", default=None,
                         help="timezone name shown to the agent (default: this machine's)")
     parser.add_argument("--evidence-session", help="matching decoder validation for range uncertainty (default: latest matching)")

@@ -1,9 +1,9 @@
 """A visible cloud browser the speller keeps driving.
 
-One Browserbase session is created on first use and held open, so "open hacker
-news" and then "click the first story" land on the same page. The live view is
-opened in the user's own browser once: the session runs in Browserbase's cloud,
-and this is the only way to watch it happen.
+One Browserbase session is created on first use and held open, so "open google",
+then "search for x", then "click the first result" all land on the same page.
+The live view is opened in the user's own browser once: the session runs in
+Browserbase's cloud, and this is the only way to watch it happen.
 
     python -m agent.browser https://news.ycombinator.com
 
@@ -19,7 +19,7 @@ import atexit
 import os
 import webbrowser
 
-TIMEOUT = 30_000        # ms; AgentService allows 60s for the whole tool call
+TIMEOUT = 15_000        # ms per action; several of these must fit AgentService's budget
 EXCERPT = 600           # characters of page text handed back to the model
 SCROLL = 700            # pixels per scroll action
 
@@ -45,7 +45,8 @@ class _Live:
         # .start() rather than a with-block: the session must outlive this call.
         self.playwright = sync_playwright().start()
         self.browser = self.playwright.chromium.connect_over_cdp(self.session.connect_url)
-        self.page = self.browser.contexts[0].pages[0]
+        self.context = self.browser.contexts[0]
+        self._current = None
 
         print(f"[browser] live view: {self.view}", flush=True)
         print(f"[browser] replay:    https://browserbase.com/sessions/{self.session.id}", flush=True)
@@ -58,6 +59,21 @@ class _Live:
                 shutdown()
             except Exception:                     # noqa: BLE001 - teardown must not raise
                 pass
+
+    @property
+    def page(self):
+        """The tab that is actually on screen.
+
+        A click can open a new tab, and everything after it has to follow. The
+        handle taken at connect time would go on reading a tab the user is no
+        longer looking at, which reads as the browser ignoring every command.
+        """
+        open_tabs = [tab for tab in self.context.pages if not tab.is_closed()]
+        tab = open_tabs[-1] if open_tabs else self.context.new_page()
+        if tab is not self._current:
+            tab.bring_to_front()     # keep the live view on the tab being driven
+            self._current = tab
+        return tab
 
 
 def _live() -> _Live:
@@ -86,7 +102,33 @@ def open_page(url: str) -> str:
     return _state()
 
 
-def act(action: str, target: str = "") -> str:
+def _field(page, hint: str):
+    """The box a `type` should land in, or None. `hint` is a placeholder, label
+    or accessible name; without one, the page's first real text box."""
+    tries = [page.get_by_placeholder(hint), page.get_by_label(hint),
+             page.get_by_role("textbox", name=hint),
+             page.get_by_role("combobox", name=hint)] if hint else []
+    tries.append(page.locator("input:not([type=hidden]):not([type=submit]):not([type=button]), "
+                              "textarea, [contenteditable=true]"))
+    for locator in tries:
+        if locator.count():
+            return locator.first
+    return None
+
+
+def _clickable(page, target: str):
+    """What `target` names, or None, preferring things that can be clicked.
+    get_by_text alone matches the outermost element containing the words, often
+    a wrapper div: the click then misses or waits out the whole timeout."""
+    for locator in (page.get_by_role("link", name=target),
+                    page.get_by_role("button", name=target),
+                    page.get_by_text(target, exact=False)):
+        if locator.count():
+            return locator.first
+    return None
+
+
+def act(action: str, target: str = "", text: str = "") -> str:
     """One step on the page already open. Errors come back as text: a failed
     click is information the model can act on, not a reason to kill the run."""
     page = _live().page
@@ -94,7 +136,20 @@ def act(action: str, target: str = "") -> str:
         if action == "click":
             if not target:
                 return "click needs the visible text of what to click"
-            page.get_by_text(target, exact=False).first.click(timeout=TIMEOUT)
+            found = _clickable(page, target)
+            if found is None:
+                return _state(f"nothing on this page matches {target!r}")
+            found.click(timeout=TIMEOUT)
+            page.wait_for_load_state("domcontentloaded", timeout=TIMEOUT)
+        elif action == "type":
+            if not text:
+                return "type needs the text to enter"
+            field = _field(page, target)
+            if field is None:
+                return _state(f"no text box on this page matches {target!r}")
+            field.click(timeout=TIMEOUT)
+            field.fill(text)
+            field.press("Enter")          # search boxes submit on Enter
             page.wait_for_load_state("domcontentloaded", timeout=TIMEOUT)
         elif action == "scroll_down":
             page.mouse.wheel(0, SCROLL)

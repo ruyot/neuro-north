@@ -12,7 +12,8 @@ import threading
 import time
 from queue import Empty, Queue
 
-TIMEOUT = 60.0          # a model call plus a tool call; past this something hung
+TIMEOUT = 150.0         # a browse chain is several model calls plus several page
+                        # actions; past this something has genuinely hung
 
 
 def _worker(requests: Queue, replies: Queue, live: bool, timezone: str | None) -> None:
