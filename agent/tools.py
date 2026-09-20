@@ -314,18 +314,20 @@ LOCAL_CALLS = {
 def describe(name: str, args: dict) -> str:
     """One human line for the console and the speller's status panel."""
     if name == "create_calendar_event":
-        return f"{args.get('summary', '?')} @ {args.get('start', '?')}"
+        return f"Calendar event: {args.get('summary', '?')} at {args.get('start', '?')}"
     if name == "create_email_draft":
         to = _clean_list(args.get("to"))
         if to:
-            return f"email draft to {', '.join(to)}: {args.get('subject', '?')}"
-        return f"email draft: {args.get('subject', '?')}"
+            return f"Gmail draft to {', '.join(to)}: {args.get('subject', '?')}"
+        return f"Gmail draft: {args.get('subject', '?')}"
     if name == "search_email_contacts":
-        return f"contacts matching {args.get('query', '?')}"
+        return f"Contact lookup: {args.get('query', '?')}"
     if name == "open_web_page":
-        return f"open {args.get('url', '?')}"
+        return f"Browser open: {args.get('url', '?')}"
     if name == "browser_act":
-        return " ".join(p for p in (args.get("action", "?"), args.get("target", "")) if p)
+        action = str(args.get("action", "?")).replace("_", " ")
+        target = args.get("target", "")
+        return f"Browser {action}: {target}" if target else f"Browser {action}"
     return f"{name}({args})"
 
 

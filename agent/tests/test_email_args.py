@@ -62,19 +62,19 @@ class DescribeEmailDraft(unittest.TestCase):
     def test_describes_recipient_and_subject(self):
         self.assertEqual(
             describe("create_email_draft", {"to": ["sam@example.com"], "subject": "Running late"}),
-            "email draft to sam@example.com: Running late",
+            "Gmail draft to sam@example.com: Running late",
         )
 
     def test_describes_missing_recipient(self):
         self.assertEqual(
             describe("create_email_draft", {"subject": "Running late"}),
-            "email draft: Running late",
+            "Gmail draft: Running late",
         )
 
     def test_describes_contact_search(self):
         self.assertEqual(
             describe("search_email_contacts", {"query": "sam"}),
-            "contacts matching sam",
+            "Contact lookup: sam",
         )
 
 

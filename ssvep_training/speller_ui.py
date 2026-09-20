@@ -228,7 +228,7 @@ class SpellerUI:
         language = getattr(self, "language", None)
         if language:
             language.submit("reset", {})
-        _set_text(self.agent_status, f"sending: {message}")
+        _set_text(self.agent_status, "Agent working...")
         self.agent_status.color = PENDING
         self._flash("right")
         print(f"[agent] sending {message!r}")

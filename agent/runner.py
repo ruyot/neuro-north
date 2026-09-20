@@ -51,15 +51,14 @@ class Result:
     def status(self) -> str:
         """One short line for the speller's status panel."""
         if not self.ok:
-            return f"agent failed: {self.error}"
+            return f"Agent error: {self.error}"
         if not self.calls:
-            return "agent: nothing to do"
-        creates = {"create_calendar_event", "create_email_draft"}
-        if all(name in creates for name, _ in self.calls):
-            done = "created" if self.live else "would create"
-        else:
-            done = "ran" if self.live else "would run"
-        return f"{done}: " + "; ".join(toolkit.describe(n, a) for n, a in self.calls)
+            return "Agent idle: nothing to do"
+        visible = [(name, args) for name, args in self.calls if name != "search_email_contacts"]
+        if not visible:
+            visible = self.calls
+        prefix = "Agent done" if self.live else "Agent plan"
+        return f"{prefix}: " + "; ".join(toolkit.describe(n, a) for n, a in visible)
 
 
 def _client():
