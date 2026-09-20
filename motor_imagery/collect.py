@@ -196,7 +196,7 @@ def main() -> None:
 
 
 def summarize(session_dir: str, completed: int, mode: str) -> None:
-    from .session import load_trials
+    from .session import load_trials, quality_warnings
 
     if not os.path.exists(os.path.join(session_dir, "raw.npz")):
         print("Nothing was recorded.")
@@ -204,6 +204,11 @@ def summarize(session_dir: str, completed: int, mode: str) -> None:
     trials = load_trials(session_dir)
     print(f"\nSession saved: {session_dir}")
     print(f"  {completed} complete block(s), {len(trials)} usable trial(s) {trials.counts()}")
+    warnings = quality_warnings(session_dir)
+    if warnings:
+        print("  RAW EEG WARNING: likely contact/saturation problem:")
+        for warning in warnings:
+            print(f"    {warning}")
     if trials.skipped:
         print(f"  {trials.skipped} skipped (inside the {cfg.PRIME_SECONDS:g} s filter priming "
               "stretch at the start, or cut short at the end)")

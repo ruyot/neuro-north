@@ -27,7 +27,7 @@ from sklearn.model_selection import LeaveOneGroupOut
 
 from . import config as cfg
 from . import model as models
-from .session import latest_session, load_trials, model_path
+from .session import latest_session, load_trials, model_path, quality_warnings
 
 
 def cross_validate(trials, name: str, folds: int | None = None):
@@ -125,6 +125,11 @@ def main() -> None:
     if trials.skipped:
         print(f"  {trials.skipped} marker(s) skipped (inside the {cfg.PRIME_SECONDS:g} s filter "
               "priming stretch, or the run ended mid-trial)")
+    warnings = quality_warnings(session)
+    if warnings:
+        print("  RAW EEG WARNING: likely contact/saturation problem:")
+        for warning in warnings:
+            print(f"    {warning}")
     if not len(trials):
         sys.exit("No usable trials in that session.")
     if trials.mode == "clench":

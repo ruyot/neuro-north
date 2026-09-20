@@ -19,7 +19,7 @@ from motor_imagery import config as cfg
 from motor_imagery import model as models
 from motor_imagery.evaluate import cross_validate
 from motor_imagery.filters import FilterBank, filter_recording
-from motor_imagery.session import encode_marker, load_trials, save_session
+from motor_imagery.session import encode_marker, load_trials, quality_warnings, save_session
 
 RATE = 125
 BLOCKS, REPEATS = 6, 2
@@ -123,6 +123,19 @@ class MotorImageryTest(unittest.TestCase):
         self.assertEqual(len(trials), 1)
         self.assertEqual(trials.skipped, 1)
 
+    def test_quality_warnings_flag_saturated_channels(self):
+        data = self.data.copy()
+        data[0, :2 * RATE] = 333_333.3
+        path = os.path.join(self._tmp.name, cfg.SESSION_PREFIX + "saturated")
+        save_session(path, data, {
+            "rate": RATE, "eeg_rows": list(range(CHANNELS)), "names": cfg.CHANNEL_NAMES,
+            "marker_row": CHANNELS, "mode": "imagine", "classes": CLASSES, "n_markers": 0})
+
+        warnings = quality_warnings(path)
+
+        self.assertTrue(any(warning.startswith("FC4:") for warning in warnings))
+        self.assertTrue(any("clipped" in warning for warning in warnings))
+
     def test_models_run_and_separate_a_planted_signal(self):
         for name in ("tangent", "fb-tangent", "fbcsp", "logvar"):
             with self.subTest(model=name):
@@ -146,6 +159,13 @@ class MotorImageryTest(unittest.TestCase):
         proba = rng.dirichlet([1, 1, 1], size=60)            # pure noise
         tuned = models.tune_margin(proba, labels, np.array(CLASSES), max_false_pick=0.1)
         self.assertLessEqual(tuned.false_pick, 0.1)
+
+    def test_motor_recorder_waits_for_motor_filter_prime(self):
+        from motor_imagery.recording import MIRecorder
+
+        recorder = MIRecorder(predict_session=self.session)
+
+        self.assertEqual(recorder._ready_seconds(), cfg.PRIME_SECONDS)
 
     def test_live_prediction_matches_the_offline_window(self):
         from joblib import dump, load

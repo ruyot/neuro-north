@@ -147,3 +147,33 @@ def session_info(path: str) -> dict:
 
     with open(os.path.join(path, "session.json")) as f:
         return json.load(f)
+
+
+def channel_quality(path: str) -> list[dict]:
+    """Raw-channel RMS and clipping flags for quick contact/saturation checks."""
+    data, meta = load_session(path)
+    eeg = data[meta["eeg_rows"]]
+    centered = eeg - eeg.mean(axis=1, keepdims=True)
+    rms = np.sqrt(np.mean(centered * centered, axis=1))
+    clipped = np.mean(np.abs(eeg) >= 300_000, axis=1)
+    names = meta.get("names", cfg.CHANNEL_NAMES)
+    return [
+        {"name": names[i] if i < len(names) else f"ch{i + 1}",
+         "rms": float(rms[i]), "clipped": float(clipped[i])}
+        for i in range(eeg.shape[0])
+    ]
+
+
+def quality_warnings(path: str, rms_uv: float = 50_000.0,
+                     clipped_fraction: float = 0.01) -> list[str]:
+    """Human-readable warnings for recordings that are unlikely to decode well."""
+    warnings = []
+    for ch in channel_quality(path):
+        reasons = []
+        if ch["clipped"] >= clipped_fraction:
+            reasons.append(f"{100 * ch['clipped']:.1f}% clipped")
+        if ch["rms"] >= rms_uv:
+            reasons.append(f"RMS {ch['rms']:.0f} uV")
+        if reasons:
+            warnings.append(f"{ch['name']}: " + ", ".join(reasons))
+    return warnings

@@ -119,12 +119,16 @@ class RecordingProcess(Process):
 
         seen_onset, seen_save, seen_predict, last_drain = 0, 0, 0, 0.0
         pending_since = None
-        # Every trial is filtered with FILTER_HISTORY seconds of EEG before its
-        # onset, so don't report ready until that much has actually ARRIVED.
-        # Waiting on the clock alone once let a wedged board pass this check and
-        # a whole 18-block session recorded zero samples.
-        ready_at = time.monotonic() + cfg.FILTER_HISTORY + 0.5
-        ready_samples = int(cfg.FILTER_HISTORY * board.rate * 0.5)
+        # Every paradigm needs a little real stream before the first usable
+        # marker. SSVEP needs pre-onset filter history; motor imagery overrides
+        # this with its longer causal-filter priming time.
+        #
+        # Don't report ready until both enough wall-clock time and enough samples
+        # have passed. Waiting on the clock alone once let a wedged board pass
+        # this check and a whole 18-block session recorded zero samples.
+        ready_seconds = self._ready_seconds()
+        ready_at = time.monotonic() + ready_seconds + 0.5
+        ready_samples = int(ready_seconds * board.rate * 0.5)
         try:
             while self._running.is_set():
                 if not self.ready.is_set():
@@ -133,7 +137,7 @@ class RecordingProcess(Process):
                         self.ready.set()
                     elif now_m > ready_at + NO_DATA_TIMEOUT:
                         print(f"[board] only {recorded} samples in "
-                              f"{cfg.FILTER_HISTORY + 0.5 + NO_DATA_TIMEOUT:.0f}s - the board is not "
+                              f"{ready_seconds + 0.5 + NO_DATA_TIMEOUT:.0f}s - the board is not "
                               f"streaming.\n[board] Unplug the USB-C for 10s, replug, and try again.")
                         self.failed.value = True
                         break
@@ -180,6 +184,12 @@ class RecordingProcess(Process):
         from .session import session_meta
 
         return session_meta(board)
+
+    def _ready_seconds(self) -> float:
+        """How much stream must arrive before the UI may start marking trials."""
+        from . import config as cfg
+
+        return cfg.FILTER_HISTORY
 
     def _predict(self, model, chunks, board) -> int | None:
         """Classify the latest live trial: target index, -1 for "neither", or

@@ -59,6 +59,10 @@ class MIRecorder(RecordingProcess):
 
         return session_meta(board, self.mode, self.classes)
 
+    def _ready_seconds(self) -> float:
+        """Motor-imagery filters are started from zero and need their own prime."""
+        return cfg.PRIME_SECONDS
+
     def _train_model(self):
         """Load the model saved beside this calibration, or fit one now."""
         import os
