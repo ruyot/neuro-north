@@ -99,6 +99,16 @@ class DryRun(unittest.TestCase):
             "book it", live=True)
         self.assertEqual(executed, ["create_calendar_event"])
 
+    def test_status_separates_what_ran_from_what_was_only_planned(self):
+        # The panel used to label the whole list "would create", which now reads
+        # as a lie about the browsing the user just watched happen.
+        status = runner.Result(ok=True, summary="", live=False, calls=[
+            ("open_web_page", {"url": "https://google.com"}),
+            ("create_calendar_event", {"summary": "Dentist", "start": "2026-09-21T15:00", "end": ""}),
+        ]).status()
+        self.assertEqual(status,
+                         "did: open https://google.com | would create: Dentist @ 2026-09-21T15:00")
+
 
 if __name__ == "__main__":
     unittest.main()

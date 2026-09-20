@@ -67,8 +67,13 @@ class Result:
             return f"agent failed: {self.error}"
         if not self.calls:
             return "agent: nothing to do"
-        done = "created" if self.live else "would create"
-        return f"{done}: " + "; ".join(toolkit.describe(n, a) for n, a in self.calls)
+        # The browser runs in a dry run, the calendar does not, so one label for
+        # the whole list would lie about half of it.
+        executed = "did: ", [toolkit.describe(n, a) for n, a in self.calls
+                             if self.live or n in toolkit.LOCAL_CALLS]
+        held = "would create: ", [toolkit.describe(n, a) for n, a in self.calls
+                                  if not (self.live or n in toolkit.LOCAL_CALLS)]
+        return " | ".join(label + "; ".join(lines) for label, lines in (executed, held) if lines)
 
 
 def _client():
