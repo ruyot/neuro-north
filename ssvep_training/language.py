@@ -120,6 +120,8 @@ class LanguageCore:
             simulator.page_index = 0
         elif action == 'undo':
             simulator.backspace()
+        elif action == 'reset':
+            simulator.reset()
         else:
             raise ValueError(f'Unknown language action: {action}')
 
@@ -165,6 +167,7 @@ class LanguageService:
         self.failed = False
         self.current_action = 'startup'
         self.queued_boundary = False
+        self.queued_reset = False
         self.started = time.monotonic()
         self.requests, self.replies = mp.Queue(), mp.Queue()
         self.process = mp.Process(target=_worker, args=(self.requests, self.replies, engine, context), daemon=True)
@@ -174,6 +177,16 @@ class LanguageService:
         if self.failed:
             return False
         if self.pending:
+            if action == 'reset':
+                # A send can land mid-selection. Dropping it (like every other
+                # action here) would leave the just-sent words in the worker's
+                # confirmed text forever -- the next send would grow, not start
+                # clean. Queue it and let it override any queued boundary: once
+                # everything is being cleared, finishing the in-flight word first
+                # is pointless.
+                self.queued_reset = True
+                self.queued_boundary = False
+                return True
             if action != 'boundary':
                 return False
             # A right swipe often arrives while the just-selected range is
@@ -211,6 +224,11 @@ class LanguageService:
             if latest['state'] is None:
                 self.failed = True
                 self.queued_boundary = False
+                self.queued_reset = False
+            elif self.queued_reset:
+                self.queued_reset = False
+                self.queued_boundary = False
+                self.submit('reset', {})
             elif self.queued_boundary:
                 self.queued_boundary = False
                 if latest['error']:

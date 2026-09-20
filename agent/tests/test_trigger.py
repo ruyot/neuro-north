@@ -21,10 +21,26 @@ class StubAgent:
         return self.accept
 
 
+class StubLanguage:
+    """Records every action sent to it, the same interface LanguageService has."""
+
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, action, payload):
+        self.submitted.append((action, payload))
+        return True
+
+
+_DEFAULT_LANGUAGE = object()  # per-instance sentinel; a StubLanguage() default would be shared
+
+
 class StubUI:
     """Just the attributes the trigger methods touch."""
 
-    def __init__(self, agent=None, language=object(), confirmed="", tentative=""):
+    def __init__(self, agent=None, language=_DEFAULT_LANGUAGE, confirmed="", tentative=""):
+        if language is _DEFAULT_LANGUAGE:
+            language = StubLanguage()
         self.agent, self.language = agent, language
         self._confirmed_text, self._tentative_text = confirmed, tentative
         self._send_armed_at = 0.0
@@ -108,6 +124,21 @@ class Sending(unittest.TestCase):
         ui = StubUI(agent=StubAgent(), confirmed="hi")
         ui.send_to_agent()
         self.assertEqual(ui.action_count, 0)
+
+    def test_sending_resets_the_language_state(self):
+        """Each send is one command, not a growing transcript: the words just
+        sent must not still be there for the next one."""
+        language = StubLanguage()
+        ui = StubUI(agent=StubAgent(), language=language, confirmed="open hacker news")
+        ui.send_to_agent()
+        self.assertIn(("reset", {}), language.submitted)
+
+    def test_a_refused_send_does_not_reset(self):
+        """A message that never went out must not be cleared either."""
+        language = StubLanguage()
+        ui = StubUI(agent=StubAgent(accept=False), language=language, confirmed="hi")
+        ui.send_to_agent()
+        self.assertEqual(language.submitted, [])
 
 
 if __name__ == "__main__":

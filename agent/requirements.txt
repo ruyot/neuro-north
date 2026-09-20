@@ -1,2 +1,4 @@
 openai>=1.40
 composio>=0.21
+browserbase>=1.4
+playwright>=1.55

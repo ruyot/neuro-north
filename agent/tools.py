@@ -62,7 +62,62 @@ SCHEMAS = [
                 "additionalProperties": False,
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_web_page",
+            "description": (
+                "Point the user's visible cloud browser at a URL. Use for any "
+                "request to open, visit, go to, look up, search or check "
+                "something on the web. For a search rather than a known site, "
+                "use https://duckduckgo.com/?q=<url-encoded+query>. The browser "
+                "stays open afterwards, so follow-up commands continue from here."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Absolute URL including the scheme, "
+                                       "e.g. https://news.ycombinator.com.",
+                    },
+                },
+                "required": ["url"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_act",
+            "description": (
+                "Do one thing on the page already open in the user's browser: "
+                "click something, scroll, go back, or re-read it. Use this rather "
+                "than open_web_page whenever the request continues from the "
+                "current page ('click the first story', 'scroll down', 'go back')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["click", "scroll_down", "scroll_up", "back", "read"],
+                        "description": "What to do on the current page.",
+                    },
+                    "target": {
+                        "type": "string",
+                        "description": "For click only: the visible text of the link "
+                                       "or button, copied from the page text you were "
+                                       "given. Empty for every other action.",
+                    },
+                },
+                "required": ["action", "target"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -119,16 +174,40 @@ COMPOSIO_CALLS = {
 }
 
 
+def _browse(args: dict) -> str:
+    from .browser import open_page
+    return open_page(args["url"])
+
+
+def _act(args: dict) -> str:
+    from .browser import act
+    return act(args["action"], args.get("target", ""))
+
+
+# Tools this machine runs itself. Composio is for accounts we act on behalf of;
+# a browser session needs no third-party authorisation, so it stays local.
+LOCAL_CALLS = {
+    "open_web_page": _browse,
+    "browser_act": _act,
+}
+
+
 def describe(name: str, args: dict) -> str:
     """One human line for the console and the speller's status panel."""
     if name == "create_calendar_event":
         return f"{args.get('summary', '?')} @ {args.get('start', '?')}"
+    if name == "open_web_page":
+        return f"open {args.get('url', '?')}"
+    if name == "browser_act":
+        return " ".join(p for p in (args.get("action", "?"), args.get("target", "")) if p)
     return f"{name}({args})"
 
 
 def execute(name: str, args: dict, user_id: str | None = None,
             timezone: str | None = None) -> str:
-    """Run the tool for real. Raises if Composio is not configured."""
+    """Run the tool for real. Raises if its backend is not configured."""
+    if name in LOCAL_CALLS:
+        return LOCAL_CALLS[name](args)
     if name not in COMPOSIO_CALLS:
         raise ValueError(f"unknown tool {name!r}")
     if not os.environ.get("COMPOSIO_API_KEY"):

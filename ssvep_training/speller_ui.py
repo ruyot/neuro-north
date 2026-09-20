@@ -207,9 +207,14 @@ class SpellerUI:
         return " ".join(p for p in (self._confirmed_text, self._tentative_text) if p).strip()
 
     def send_to_agent(self) -> None:
-        """Hand the finished message to the agent. Never blocks, and deliberately
-        does not call _changed(): it alters no text, so an EEG selection that is
-        still in flight must not be discarded for it."""
+        """Hand the finished message to the agent, then clear it: each send is one
+        command, not a growing transcript, so the next spelled word must not be
+        appended to the one just sent. Reset goes through the language worker
+        (same as every other edit) rather than touching self.items directly, so
+        it applies once the worker is free rather than racing an in-flight one.
+        Never blocks, and deliberately does not call _changed(): it alters no
+        text yet -- the clear lands async, via the next poll_language() -- so an
+        EEG selection still in flight is not discarded for it."""
         self._send_armed_at = 0.0
         if not getattr(self, "agent", None):
             return
@@ -220,6 +225,9 @@ class SpellerUI:
         if not self.agent.submit(message):
             print("[agent] still working on the previous message")
             return
+        language = getattr(self, "language", None)
+        if language:
+            language.submit("reset", {})
         _set_text(self.agent_status, f"sending: {message}")
         self.agent_status.color = PENDING
         self._flash("right")
