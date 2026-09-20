@@ -103,8 +103,10 @@ def _listing(page) -> str:
         texts = _clickables(page).all_inner_texts()
     except Exception as exc:                      # noqa: BLE001 - a blank page is not fatal
         return f"clickable: (could not list: {exc})"
+    # 1-based: a model told "the first link" writes 1, not 0. _clickable takes
+    # the number back off again, so the index here is the only one anyone sees.
     listed = [f"{index}. {' '.join(text.split())[:LABEL]}"
-              for index, text in enumerate(texts) if text.strip()][:LINKS]
+              for index, text in enumerate(texts, 1) if text.strip()][:LINKS]
     return "clickable:\n" + "\n".join(listed) if listed else "clickable: none found"
 
 
@@ -149,7 +151,10 @@ def _clickable(page, target: str):
     outermost element containing the words, often a wrapper div, and the click
     then misses or waits out the whole timeout."""
     if target.strip().isdigit():
-        item = _clickables(page).nth(int(target.strip()))
+        index = int(target.strip())
+        if index < 1:
+            return None                           # the list the model was shown starts at 1
+        item = _clickables(page).nth(index - 1)
         return item if item.count() else None
     for locator in (page.get_by_role("link", name=target),
                     page.get_by_role("button", name=target),

@@ -149,10 +149,15 @@ class FakePage:
 
 class Clicking(unittest.TestCase):
     def test_a_number_indexes_the_list_the_model_was_shown(self):
+        # The list is 1-based because "the first link" is written 1; the DOM
+        # order underneath is not, and the gap is where an off-by-one hides.
         page = FakePage()
         self.assertIsNotNone(browser._clickable(page, "3"))
-        self.assertIn(("nth", 3), page.chain)
+        self.assertIn(("nth", 2), page.chain)
         self.assertNotIn("role", [step[0] for step in page.chain])
+
+    def test_zero_is_not_a_position_on_that_list(self):
+        self.assertIsNone(browser._clickable(FakePage(), "0"))
 
     def test_text_still_prefers_a_link_over_a_wrapper(self):
         page = FakePage()
@@ -164,9 +169,13 @@ class Clicking(unittest.TestCase):
 
     def test_the_numbers_shown_are_the_numbers_a_click_uses(self):
         # Unnamed clickables keep their slot: renumbering the visible ones would
-        # make "click 3" land on something the model never saw.
+        # make "click 2" land on something the model never saw.
         page = FakePage(texts=["", "Hacker News", "   ", "Images\n"])
-        self.assertEqual(browser._listing(page), "clickable:\n1. Hacker News\n3. Images")
+        self.assertEqual(browser._listing(page), "clickable:\n2. Hacker News\n4. Images")
+
+        clicked = FakePage()
+        browser._clickable(clicked, "2")          # what the model reads off that list
+        self.assertIn(("nth", 1), clicked.chain)  # is the "Hacker News" element
 
 
 if __name__ == "__main__":
