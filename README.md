@@ -10,6 +10,7 @@ speller can run without a headset using keyboard and mouse input.
 > **Photosensitivity warning:** headset collection and live EEG modes display
 > flashing visual stimuli
 
+Check out our [Devpost page](https://hackthenorth2026.devpost.com/)!
 
 ## Setup
 
