@@ -81,6 +81,7 @@ class LanguageCore:
             # CPU avoids competing with PsychoPy's rendering for the GPU.
             self.simulator._scorers[engine] = CausalCandidateScorer(ENGINE_MODELS[engine][1], device='cpu')
         self.simulator.set_engine(engine)
+        self.simulator.set_decode_mode('sentence-beam')
         self.simulator.set_context_prefix(context)
 
     def apply(self, action, payload):
@@ -100,6 +101,8 @@ class LanguageCore:
         elif action == 'boundary':
             if simulator.decoder.observations:
                 simulator.boundary()
+            elif simulator.tentative_words:
+                simulator.finish_sentence()
             simulator.page_index = 0
         elif action == 'undo':
             simulator.backspace()
@@ -108,8 +111,9 @@ class LanguageCore:
 
     def snapshot(self):
         state = self.simulator.state()
-        return {key: state[key] for key in ('confirmed_words', 'current_ranges', 'candidates',
-                                             'engine', 'last_event')}
+        return {key: state[key] for key in ('confirmed_words', 'tentative_words',
+                                             'current_ranges', 'candidates', 'engine',
+                                             'decode_mode', 'can_finish', 'last_event')}
 
 
 def _worker(requests, replies, engine, context):

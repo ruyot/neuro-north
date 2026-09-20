@@ -12,7 +12,7 @@ plain method, so the IMU layer only has to call it:
     ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges
 
     python -m ssvep_training.speller_ui           # headset + latest calibration
-    python -m ssvep_training.speller_ui --keys    # no headset, no flicker: 1 / 2 pick a box
+    python -m ssvep_training.speller_ui --keys    # no headset/flicker: keyboard or mouse
 """
 
 from __future__ import annotations
@@ -84,6 +84,8 @@ class SpellerUI:
         self.language = language
         self.items: list[str] = []      # typed so far: a range ("abcdef"), a letter, or " "
         self.suggestions = ["", ""]     # top, bottom
+        self._confirmed_text = ""
+        self._tentative_text = ""
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
         self._flash_until: dict[str, float] = {}
         self._line_colors: dict[int, str] = {}
@@ -206,9 +208,17 @@ class SpellerUI:
         if reply is None:
             return
         if reply['state'] is None:
-            raise RuntimeError(reply['error'] + "; run python -m linguistic_model.prepare if weights are missing")
+            error = reply['error']
+            if "No module named 'torch'" in error or "No module named 'transformers'" in error:
+                raise RuntimeError(error + "; install linguistic_model/experiments/requirements.txt")
+            raise RuntimeError(error + "; run python -m linguistic_model.prepare if model weights are missing")
         state = reply['state']
-        done = " ".join(state['confirmed_words'])
+        confirmed = state['confirmed_words']
+        tentative = state['tentative_words']
+        resolved = [*confirmed, *tentative]
+        done = " ".join(resolved)
+        self._confirmed_text = " ".join(confirmed)
+        self._tentative_text = " ".join(tentative)
         labels = {range_name(r).upper(): r for r in RANGES}
         self.items = list(done + " " if done else "") + [labels[r] for r in state['current_ranges']]
         # A queued finish-word action may already be running. Its intermediate
@@ -293,15 +303,21 @@ class SpellerUI:
         other = self.pages[(self.page + 1) % len(self.pages)]
         _set_text(self.next_ranges, "\n".join(range_name(r) for r in other))
 
-        for stim, word in zip(self.suggestion_text, self.suggestions):
-            _set_text(stim, word or "suggestion")
-            stim.color = TEXT if word else FAINT
+        for stim, suggestion in zip(self.suggestion_text, self.suggestions):
+            _set_text(stim, suggestion or "suggestion")
+            stim.color = TEXT if suggestion else FAINT
 
         word = self.current_word()
-        done = _render(self.items[:len(self.items) - len(word)])
+        tentative = getattr(self, "_tentative_text", "")
+        if getattr(self, "language", None) and tentative:
+            done = getattr(self, "_confirmed_text", "")
+            done += " " if done else ""
+            pending = tentative + (" " if word else "") + _render(word)
+        else:
+            done = _render(self.items[:len(self.items) - len(word)])
+            pending = _render(word)
         if len(done) > MAX_TYPED_CHARS:
             done = "…" + done[-MAX_TYPED_CHARS:]
-        pending = _render(word)
         if len(pending) > MAX_TYPED_CHARS:
             pending = "…" + pending[-MAX_TYPED_CHARS:]
         _set_text(self.done_text, done)
@@ -363,6 +379,12 @@ KEY_ACTIONS = {
     "down": ("pick_suggestion", 1),
 }
 BOX_KEYS = {"1": 0, "2": 1}
+MOUSE_ACTIONS = {
+    "left": ("next_wheel",),
+    "right": ("space",),
+    "top": ("pick_suggestion", 0),
+    "bottom": ("pick_suggestion", 1),
+}
 
 
 def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
@@ -377,6 +399,19 @@ def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
             name, *args = KEY_ACTIONS[key]
             getattr(ui, name)(*args)
     return True
+
+def handle_mouse(ui: SpellerUI, squares, mouse) -> bool:
+    """Dispatch one primary-button click. Panels are on top of overlapping boxes."""
+    for panel, action in MOUSE_ACTIONS.items():
+        if ui.panels[panel].contains(mouse):
+            name, *args = action
+            getattr(ui, name)(*args)
+            return True
+    for index, square in enumerate(squares):
+        if square.contains(mouse):
+            ui.select_box(index)
+            return True
+    return False
 
 
 def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
@@ -394,12 +429,21 @@ def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
 
 
 def run_keys(win, ui: SpellerUI, squares) -> None:
-    """No board, no flicker: boxes shown dim grey, 1 / 2 pick."""
+    """No board or flicker: keyboard and primary-button clicks drive the UI."""
+    from psychopy import event
+
     for sq in squares:
         sq.fillColor = sq.lineColor = "#23262e"
+    mouse = event.Mouse(win=win)
+    mouse.setVisible(True)
+    was_pressed = bool(mouse.getPressed()[0])
     win.recordFrameIntervals = True
     try:
         while handle_keys(ui, boxes=True):
+            pressed = bool(mouse.getPressed()[0])
+            if pressed and not was_pressed:
+                handle_mouse(ui, squares, mouse)
+            was_pressed = pressed
             if getattr(ui, "language", None):
                 ui.poll_language()
             for sq in squares:
@@ -567,7 +611,8 @@ def _report_frames(win) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--keys", action="store_true", help="no headset, no flicker: 1 / 2 pick a box")
+    parser.add_argument("--keys", action="store_true",
+                        help="no headset or flicker: use 1 / 2, arrows, or mouse clicks")
     parser.add_argument("--port", help="override PORT_PATH from .env")
     parser.add_argument("--session", help="calibration folder to train on (default: latest)")
     parser.add_argument("--decoder", choices=["cca", "trca"], default="cca",
@@ -679,13 +724,19 @@ def main() -> None:
                     return
                 ui.poll_language()
                 show_message(win, "Loading local word suggestions...\n\nEscape quits.")
-        how = ("1 / 2 = left / right box" if args.keys else
-               "SPACE, then look at a box" if args.manual else "Look at a box")
-        if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
-                                 "Head left / right = wheel / finish word\n"
-                                 "Head up / down = accept suggestion\n"
-                                 "Arrow keys also work. Escape quits.\n\n"
-                                 "Press SPACE to start.", name="Speller"):
+        if args.keys:
+            instructions = ("1 / 2 or click a box to select its letter range.\n\n"
+                            "Arrow keys or the side panels change wheel / end a word.\n"
+                            "Use the right action again with no ranges to commit the sentence.\n"
+                            "Up / down or the top / bottom panels accept suggestions.")
+        else:
+            how = "SPACE, then look at a box" if args.manual else "Look at a box"
+            instructions = (f"{how}: types its letters as one item.\n\n"
+                            "Head left / right = wheel / finish word\n"
+                            "Head up / down = accept suggestion\n"
+                            "Arrow keys also work.")
+        if not wait_for_key(win, f"Speller\n\n{instructions}\nEscape quits.\n\n"
+                                 "Press SPACE or click to start.", name="Speller"):
             return
         if recorder:
             from psychopy import visual
