@@ -649,6 +649,9 @@ def main() -> None:
                         help="local word suggestions (default: gpt2); off restores range-only UI")
     parser.add_argument("--context", default="", help="optional conversation prompt for word suggestions")
     parser.add_argument("--evidence-session", help="matching decoder validation for range uncertainty (default: latest matching)")
+    parser.add_argument("--range-evidence", choices=["calibrated", "hard"], default="calibrated",
+                        help="calibrated: validation-derived uncertainty (default); "
+                             "hard: pass each accepted argmax as 1.0/0.0")
     parser.add_argument("--stimulus", choices=["flicker", "motion"], default=cfg.STIMULUS_MODE)
     parser.add_argument('--experimental-layout', choices=list(cfg.LAYOUT_PRESETS), default='current',
                         help='live visual experiment using the existing model/evidence; accuracy must be rechecked')
@@ -703,17 +706,20 @@ def main() -> None:
                          f"{channels}. TRCA has one weight per channel; they must match.")
         print(f"{args.decoder.upper()} | channels {channels} (from {source})")
         if args.engine != "off":
-            from .language import RangeEvidence
-            if args.decoder == 'cca' and args.threshold != cfg.CONFIDENCE_THRESHOLD:
-                parser.error("CCA language evidence requires the default CCA threshold")
-            policy = dict(decoder=args.decoder, calibration_session=session,
-                          min_peak=args.trca_min_peak, below=args.trca_below)
-            try:
-                evidence = (RangeEvidence.from_validation(args.evidence_session, channels, **policy)
-                            if args.evidence_session else RangeEvidence.latest(channels, **policy))
-            except (OSError, KeyError, ValueError) as exc:
-                parser.error(str(exc))
-            print(f"[language] provisional range reliability from {evidence.samples} accepted trials: {evidence.source}")
+            if args.range_evidence == "hard":
+                print("[language] hard range evidence: accepted argmax is passed as 1.0/0.0")
+            else:
+                from .language import RangeEvidence
+                if args.decoder == 'cca' and args.threshold != cfg.CONFIDENCE_THRESHOLD:
+                    parser.error("CCA language evidence requires the default CCA threshold")
+                policy = dict(decoder=args.decoder, calibration_session=session,
+                              min_peak=args.trca_min_peak, below=args.trca_below)
+                try:
+                    evidence = (RangeEvidence.from_validation(args.evidence_session, channels, **policy)
+                                if args.evidence_session else RangeEvidence.latest(channels, **policy))
+                except (OSError, KeyError, ValueError) as exc:
+                    parser.error(str(exc))
+                print(f"[language] provisional range reliability from {evidence.samples} accepted trials: {evidence.source}")
         live_dir = None
         if args.save:
             live_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("live_%Y%m%d_%H%M%S"))
@@ -790,6 +796,8 @@ def main() -> None:
             with open(os.path.join(live_dir, "language.json"), "w") as f:
                 json.dump({"engine": args.engine, "context": args.context,
                            "decode_mode": "sentence-beam" if language else None,
+                           "range_evidence": ("hard" if args.keys else args.range_evidence)
+                           if language else None,
                            "confirmed_text": getattr(ui, '_confirmed_text', '') if ui else '',
                            "tentative_text": getattr(ui, '_tentative_text', '') if ui else '',
                            'decoder': args.decoder, 'calibration_session': args.session,

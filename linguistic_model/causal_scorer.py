@@ -15,9 +15,9 @@ class ScorerStats:
 class CausalCandidateScorer:
     """Scores complete candidate words as continuations of confirmed text.
 
-    The candidate includes a leading and trailing space. The trailing space is
-    intentional: it scores the word boundary instead of treating a shorter word
-    as an unfinished prefix of a longer token sequence.
+    A leading space gives tokenizers the normal word-boundary form. A trailing
+    space is deliberately excluded: GPT-style tokenizers attach whitespace to
+    the following word, so scoring a standalone space distorts the candidate.
     """
 
     def __init__(
@@ -71,7 +71,7 @@ class CausalCandidateScorer:
         return [fallback]
 
     def score(self, context: Sequence[str], candidates: Sequence[str]) -> Dict[str, float]:
-        """Return log P(" candidate " | context) for each unique candidate."""
+        """Return log P(" candidate" | context) for each unique candidate."""
         unique = list(dict.fromkeys(candidate.strip().lower() for candidate in candidates))
         if not unique:
             return {}
@@ -82,7 +82,7 @@ class CausalCandidateScorer:
         context_ids = self._context_tokens(context)
         continuations = []
         for word in unique:
-            continuation = self.tokenizer.encode(" " + word + " ", add_special_tokens=False)
+            continuation = self.tokenizer.encode(" " + word, add_special_tokens=False)
             if not continuation:
                 raise ValueError("candidate %r produced no tokens" % word)
             continuations.append((word, continuation))

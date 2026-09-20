@@ -36,7 +36,8 @@ PORT_PATH=/dev/cu.usbserial-XXXX
 `--port` can override this value for an individual command.
 
 ## Run with the headset
-CCA requires no training session, but GPT-2 language evidence requires a matching validation session for the selected channels: 
+CCA requires no training session. By default, GPT-2 requires a matching
+validation session to estimate range uncertainty for the selected channels:
 ```sh
 python -m ssvep_training.speller_ui \
   --channels 1,2,3,4 \
@@ -48,6 +49,17 @@ python -m ssvep_training.speller_ui \
 
 Add `--windowed` for windowed mode. Add `--manual` to press Space before each
 EEG selection, or `--no-imu` to use arrow keys instead of head gestures.
+
+To treat every accepted CCA/TRCA argmax as certain, add:
+
+```sh
+--range-evidence hard
+```
+
+Hard evidence sends the selected range as `1.0` and the other displayed range
+as `0.0`. It does not require a validation session, but sentence beam cannot
+recover from an accepted SSVEP range error. The default is
+`--range-evidence calibrated`.
 
 For TRCA, provide the frozen calibration and matching validation sessions:
 
