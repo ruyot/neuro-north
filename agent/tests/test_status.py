@@ -30,14 +30,23 @@ class StatusText(unittest.TestCase):
         self.assertEqual(status, "Agent done: Gmail draft: Running late")
         self.assertNotIn("lookup", status.lower())
 
-    def test_dry_run_uses_plan_prefix(self):
+    def test_dry_run_browser_uses_done_prefix(self):
         status = Result(
             ok=True,
             summary="",
             live=False,
             calls=[("open_web_page", {"url": "https://news.ycombinator.com"})],
         ).status()
-        self.assertEqual(status, "Agent plan: Browser open: https://news.ycombinator.com")
+        self.assertEqual(status, "Agent done: Browser open: https://news.ycombinator.com")
+
+    def test_dry_run_account_tool_uses_plan_prefix(self):
+        status = Result(
+            ok=True,
+            summary="",
+            live=False,
+            calls=[("create_email_draft", {"subject": "Running late"})],
+        ).status()
+        self.assertEqual(status, "Agent plan: Gmail draft: Running late")
 
 
 if __name__ == "__main__":
