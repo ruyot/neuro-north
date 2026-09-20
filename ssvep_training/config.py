@@ -13,6 +13,24 @@ EXPECTED_REFRESH_HZ = 60
 TARGET_X = 0.70
 TARGET_SIZE = (0.45, 1.0)
 
+# Live-only visual experiments; these do not replace the calibrated default.
+LAYOUT_PRESETS = {
+    'current': (0.70, (0.45, 1.0), 8),
+    'small': (0.70, (0.30, 0.66), 8),
+    'large': (0.64, (0.60, 1.20), 8),
+    'coarse': (0.70, (0.45, 1.0), 4),
+}
+
+def configure_layout(name):
+    global EXPERIMENTAL_LAYOUT, TARGET_X, TARGET_SIZE, MOTION_SPATIAL_CYCLES
+    if name not in LAYOUT_PRESETS:
+        raise ValueError('Unknown layout preset')
+    EXPERIMENTAL_LAYOUT = name
+    TARGET_X, TARGET_SIZE, MOTION_SPATIAL_CYCLES = LAYOUT_PRESETS[name]
+    os.environ['NEURO_LAYOUT'] = name
+
+configure_layout(os.environ.get('NEURO_LAYOUT', 'current'))
+
 CUE_DURATION = 1.0
 FLICKER_DURATION = 2.5
 INTER_TRIAL_INTERVAL = 1.5
@@ -52,3 +70,22 @@ GESTURE_MIN_SPEED = 0.08  # firmware stream units, not raw 16-bit counts
 GESTURE_DWELL = 0.08     # sustained motion before firing
 GESTURE_REARM = 0.25     # quiet motion required before another gesture
 GESTURE_PROFILE_PATH = os.path.join(RESULTS_DIR, "imu_profile.json")
+
+# Environment propagates the selected paradigm into multiprocessing workers.
+STIMULUS_MODE = os.environ.get("NEURO_STIMULUS", "flicker")
+def stimulus_method():
+    return "motion_grating_reversal_v1" if STIMULUS_MODE == "motion" else "integer_frame_cycles_v1"
+
+def configure_stimulus(mode):
+    global STIMULUS_MODE
+    if mode not in ("flicker", "motion"):
+        raise ValueError("Unknown stimulus mode")
+    STIMULUS_MODE = mode
+    os.environ["NEURO_STIMULUS"] = mode
+
+
+def stimulus_warning():
+    description = ("This screen shows rapidly reversing moving patterns." if STIMULUS_MODE == "motion"
+                   else "This screen FLASHES at 12-15 Hz.")
+    return (description + "\n\nDo not use it if you have epilepsy or have ever had a seizure,"
+            "\nand stop immediately if you feel unwell.\n\nPress SPACE to continue, Escape to quit.")

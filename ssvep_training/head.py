@@ -149,8 +149,12 @@ class Gestures:
                 reverse = (-projection > .5 * np.linalg.norm(self.limit)
                            and -projection >= .7 * np.linalg.norm(dev))
                 self.return_count = self.return_count + 1 if reverse else 0
-                self.return_seen |= self.return_count >= self.dwell
-                returned = self.travel <= .35 * self.peak_travel or self.return_seen
+                # A completed return must survive corrective movement before
+                # stillness. Otherwise an overshoot followed by a correction
+                # can erase the integrated return and leave us locked forever.
+                self.return_seen |= (self.return_count >= self.dwell
+                                     or self.travel <= .35 * self.peak_travel)
+                returned = self.return_seen
                 if returned and self.since >= self.hold and self.quiet_count >= self.rearm:
                     self.armed = True
                 else:
