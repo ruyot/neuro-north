@@ -37,6 +37,7 @@ PICK_FLASH_SECONDS = 0.35           # green box highlight, outlives the rest on 
 PREDICTION_TIMEOUT = 4.0
 FLASH_SECONDS = 0.3        
 MAX_TYPED_CHARS = 26       
+SEND_WINDOW = 5.0          # seconds a second right edge counts as "send"
 
 FONT = "Helvetica Neue"
 TEXT = "#e8eaed"
@@ -46,6 +47,7 @@ PANEL = "#14161b"
 BORDER = "#272b34"
 ACCENT = "#4ade80"         # picks and actions
 PENDING = "#7cb7ff"        # the word being typed, still ranges
+ERROR = "#ff6b6b"          # agent failures
 
 # Panels, normalised units (screen = -1..1): name -> (centre, size)
 PANELS = {
@@ -72,7 +74,7 @@ class SpellerUI:
     """Screen state + drawing. Draws everything except the flicker squares,
     so draw() can go on top of any flicker frame."""
 
-    def __init__(self, win, cues, language=None):
+    def __init__(self, win, cues, language=None, agent=None):
         """cues: the outline per box from stimulus.build_stimuli(), used for pick feedback."""
         from psychopy import visual
 
@@ -86,6 +88,9 @@ class SpellerUI:
         self.suggestions = ["", ""]     # top, bottom
         self._confirmed_text = ""
         self._tentative_text = ""
+        self.agent = agent
+        self._send_armed_at = 0.0       # right edge arms SEND; any action disarms
+        self._send_shown = False        # what the right edge label currently says
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
         self._flash_until: dict[str, float] = {}
         self._line_colors: dict[int, str] = {}
@@ -123,6 +128,7 @@ class SpellerUI:
         self.word_text = text((0.015, y), 0.07, PENDING, anchor="left")
 
         lx, rx = PANELS["left"][0][0], PANELS["right"][0][0]
+        self.space_label = text((rx, -0.02), 0.036, MUTED, bold=True, text="SPACE")
         dot = 0.012
         self.page_dots = [visual.ShapeStim(win, units="norm", pos=(lx + dx / aspect, 0.03),
                                            vertices=_rounded_rect((2 * dot / aspect, 2 * dot), dot, aspect),
@@ -132,7 +138,7 @@ class SpellerUI:
             *_arrow(win, (lx, 0.19), -1, aspect),
             text((lx, 0.11), 0.036, MUTED, bold=True, text="WHEEL"),
             *_arrow(win, (rx, 0.06), 1, aspect),
-            text((rx, -0.02), 0.036, MUTED, bold=True, text="SPACE"),
+            self.space_label,
         ]
         self.next_ranges = text((lx, -0.1), 0.04, FAINT)
 
@@ -142,6 +148,7 @@ class SpellerUI:
         self.bar_fill = visual.Rect(win, units="norm", width=w, height=bh, pos=(-w / 2, PROGRESS_Y),
                                     anchor="left", fillColor=ACCENT, lineColor=None)
         self.bar_label = text((0, PROGRESS_Y - 0.045), 0.035, MUTED)
+        self.agent_status = text((0, PROGRESS_Y - 0.10), 0.034, MUTED, text="")
         self._progress: tuple[str, float] | None = None   # (phase, fraction); None hides the bar
         self._bar_phase = None
         self._refresh()
@@ -169,6 +176,11 @@ class SpellerUI:
         self._changed("wheel -> " + " / ".join(range_name(r) for r in self.pages[self.page]))
 
     def space(self) -> None:
+        # A second right edge within SEND_WINDOW sends instead of spacing. Free to
+        # take: with the language engine on, poll_language rebuilds the text as
+        # words joined by single spaces, so a repeated boundary has nothing to do.
+        if self._send_armed():
+            return self.send_to_agent()
         language = getattr(self, "language", None)
         if language:
             if not language.submit("boundary", {}):
@@ -180,6 +192,49 @@ class SpellerUI:
             self.page = 0
         self._flash("right")
         self._changed("space")
+        if getattr(self, "agent", None) and language:   # _changed disarmed; NEXT right edge sends
+            self._send_armed_at = time.perf_counter()
+
+    def _send_armed(self) -> bool:
+        """True while a second right edge would send. Requires the language
+        engine: without it a double space is real text, not a dead input."""
+        return bool(getattr(self, "agent", None) and getattr(self, "language", None)
+                    and time.perf_counter() - self._send_armed_at < SEND_WINDOW)
+
+    def message_text(self) -> str:
+        """What the user sees as their message: confirmed words plus the tentative
+        ones already resolved on screen. The word in progress is still ranges."""
+        return " ".join(p for p in (self._confirmed_text, self._tentative_text) if p).strip()
+
+    def send_to_agent(self) -> None:
+        """Hand the finished message to the agent. Never blocks, and deliberately
+        does not call _changed(): it alters no text, so an EEG selection that is
+        still in flight must not be discarded for it."""
+        self._send_armed_at = 0.0
+        if not getattr(self, "agent", None):
+            return
+        message = self.message_text()
+        if not message:
+            print("[agent] nothing typed yet")
+            return
+        if not self.agent.submit(message):
+            print("[agent] still working on the previous message")
+            return
+        _set_text(self.agent_status, f"sending: {message}")
+        self.agent_status.color = PENDING
+        self._flash("right")
+        print(f"[agent] sending {message!r}")
+
+    def poll_agent(self) -> None:
+        """Apply agent replies between selections, never during EEG flicker."""
+        if not getattr(self, "agent", None):
+            return
+        reply = self.agent.poll()
+        if reply is None:
+            return
+        _set_text(self.agent_status, reply["status"])
+        self.agent_status.color = ACCENT if reply["ok"] else ERROR
+        print(f"[agent] {reply['status']}")
 
     def pick_suggestion(self, slot: int) -> None:
         """Replace the current word with suggestion `slot` (0 = top, 1 = bottom)
@@ -254,8 +309,14 @@ class SpellerUI:
         for name, shape in self.panels.items():
             self._set_line(shape, ACCENT if now < self._flash_until.get(name, 0) else BORDER)
             shape.draw()
+        armed = self._send_armed()      # expires on a clock, so check per frame
+        if armed != self._send_shown:
+            self._send_shown = armed
+            _set_text(self.space_label, "SEND \u25b8" if armed else "SPACE")
+            self.space_label.color = ACCENT if armed else MUTED
         for stim in (*self.suggestion_text, self.done_text, self.word_text,
-                     *self.side_static, self.next_ranges, *self.page_dots):
+                     *self.side_static, self.next_ranges, *self.page_dots,
+                     self.agent_status):
             stim.draw()
         if self._progress:
             self._draw_progress(*self._progress)
@@ -288,6 +349,7 @@ class SpellerUI:
 
     def _changed(self, what: str) -> None:
         self.action_count += 1
+        self._send_armed_at = 0.0       # any action cancels a pending send
         self._refresh()
         print(f"[ui] {what:<24} ->  {self.text!r}")
 
@@ -377,6 +439,7 @@ KEY_ACTIONS = {
     "right": ("space",),
     "up": ("pick_suggestion", 0),
     "down": ("pick_suggestion", 1),
+    "return": ("send_to_agent",),
 }
 BOX_KEYS = {"1": 0, "2": 1}
 MOUSE_ACTIONS = {
@@ -446,6 +509,7 @@ def run_keys(win, ui: SpellerUI, squares) -> None:
             was_pressed = pressed
             if getattr(ui, "language", None):
                 ui.poll_language()
+            ui.poll_agent()
             for sq in squares:
                 sq.draw()
             ui.draw()
@@ -498,6 +562,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
     try:
         while True:
             t = clock.getTime()
+            if state != "flicker":
+                ui.poll_agent()
             language = getattr(ui, "language", None)
             if language and state != "flicker":
                 ui.poll_language()
@@ -636,6 +702,14 @@ def main() -> None:
     parser.add_argument("--engine", choices=["gpt2", "bigram", "off"], default="gpt2",
                         help="local word suggestions (default: gpt2); off restores range-only UI")
     parser.add_argument("--context", default="", help="optional conversation prompt for word suggestions")
+    parser.add_argument("--agent", action="store_true",
+                        help="a second right edge (or Return) sends the typed message to the agent, "
+                             "which turns it into a calendar event; needs --engine gpt2")
+    parser.add_argument("--agent-live", action="store_true",
+                        help="let the agent actually execute its tool calls; without this it "
+                             "reports what it WOULD do and writes nothing to your calendar")
+    parser.add_argument("--agent-tz", default=None,
+                        help="timezone name shown to the agent (default: this machine's)")
     parser.add_argument("--evidence-session", help="matching labeled CCA validation for range uncertainty (default: latest matching)")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
@@ -644,8 +718,15 @@ def main() -> None:
     recorder = None
     language = None
     evidence = None
+    agent = None
     if len(args.context) > 500:
         parser.error("--context must be at most 500 characters")
+    if args.agent and args.engine == "off":
+        # Without a decoder the text is unresolved ranges, and a double space is
+        # real text rather than the dead input the send trigger borrows.
+        parser.error("--agent needs word suggestions; drop --engine off")
+    if args.agent_live and not args.agent:
+        parser.error("--agent-live does nothing without --agent")
     if not args.keys:
         from .recording import RecordingProcess
         from .session import latest_session
@@ -716,7 +797,11 @@ def main() -> None:
                 return
 
         squares, cues, _ = build_stimuli(win)
-        ui = SpellerUI(win, cues, language)
+        if args.agent:
+            from .agent import AgentService
+            agent = AgentService(live=args.agent_live, timezone=args.agent_tz)
+            print(f"agent: {'LIVE - tool calls will execute' if args.agent_live else 'dry run'}")
+        ui = SpellerUI(win, cues, language, agent)
         if language:
             from psychopy import event
             while language.pending:
@@ -729,12 +814,16 @@ def main() -> None:
                             "Arrow keys or the side panels change wheel / end a word.\n"
                             "Use the right action again with no ranges to commit the sentence.\n"
                             "Up / down or the top / bottom panels accept suggestions.")
+        if args.agent:
+            instructions += "\n\nEnd a word, then use the right action again to SEND."
         else:
             how = "SPACE, then look at a box" if args.manual else "Look at a box"
             instructions = (f"{how}: types its letters as one item.\n\n"
                             "Head left / right = wheel / finish word\n"
                             "Head up / down = accept suggestion\n"
                             "Arrow keys also work.")
+        if args.agent:
+            instructions += "\n\nTilt right twice to SEND the message."
         if not wait_for_key(win, f"Speller\n\n{instructions}\nEscape quits.\n\n"
                                  "Press SPACE or click to start.", name="Speller"):
             return
@@ -748,6 +837,8 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Stopped: Ctrl+C in the terminal.")
     finally:
+        if agent:
+            agent.close()
         if language:
             language.close()
         if recorder and recorder.pid is not None:
