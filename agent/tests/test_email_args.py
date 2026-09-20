@@ -3,7 +3,14 @@ from __future__ import annotations
 
 import unittest
 
-from agent.tools import _compose_contact_search, _compose_email_draft, describe
+from agent.tools import (
+    _compose_contact_search,
+    _compose_email_draft,
+    describe,
+    execute,
+    local_contact_email,
+    local_contact_hint,
+)
 
 
 class ComposeContactSearch(unittest.TestCase):
@@ -13,6 +20,12 @@ class ComposeContactSearch(unittest.TestCase):
         self.assertEqual(out["page_size"], 5)
         self.assertEqual(out["person_fields"], "names,emailAddresses")
         self.assertIs(out["other_contacts"], True)
+
+    def test_local_contact_search_is_narrowed_to_email(self):
+        out = _compose_contact_search({"query": "aaron"})
+        self.assertEqual(out["query"], "aaronvrgs6561@gmail.com")
+        self.assertEqual(out["page_size"], 1)
+        self.assertIs(out["other_contacts"], False)
 
 
 class ComposeEmailDraft(unittest.TestCase):
@@ -57,6 +70,14 @@ class ComposeEmailDraft(unittest.TestCase):
         self.assertEqual(out["recipient_email"], "sam@example.com")
         self.assertNotIn("cc", out)
 
+    def test_local_contact_name_becomes_email_recipient(self):
+        out = _compose_email_draft({
+            "to": ["aaron"],
+            "subject": "Hello",
+            "body": "Hi",
+        })
+        self.assertEqual(out["recipient_email"], "aaronvrgs6561@gmail.com")
+
 
 class DescribeEmailDraft(unittest.TestCase):
     def test_describes_recipient_and_subject(self):
@@ -75,6 +96,24 @@ class DescribeEmailDraft(unittest.TestCase):
         self.assertEqual(
             describe("search_email_contacts", {"query": "sam"}),
             "Contact lookup: sam",
+        )
+
+    def test_describes_local_contact_email(self):
+        self.assertEqual(
+            describe("create_email_draft", {"to": ["aaron"], "subject": "Hello"}),
+            "Gmail draft to aaronvrgs6561@gmail.com: Hello",
+        )
+
+
+class LocalContacts(unittest.TestCase):
+    def test_aaron_is_available_to_the_agent(self):
+        self.assertEqual(local_contact_email("Aaron"), "aaronvrgs6561@gmail.com")
+        self.assertIn("aaron <aaronvrgs6561@gmail.com>", local_contact_hint())
+
+    def test_local_contact_search_returns_without_composio_key(self):
+        self.assertEqual(
+            execute("search_email_contacts", {"query": "aaron"}),
+            "LOCAL CONTACT: aaron <aaronvrgs6561@gmail.com>",
         )
 
 

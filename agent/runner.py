@@ -47,6 +47,8 @@ For email requests, create a Gmail draft only. Never send email. If the user \
 names someone without giving a real email address, search email contacts first \
 and use a likely returned email address. If contact search is unavailable or no \
 reasonable match is returned, omit the recipient rather than inventing one.
+Locally saved contacts are: {contacts}. Use these addresses directly before \
+searching Gmail contacts.
 
 A cloud browser stays open between messages, and the tool results already in \
 this conversation show the page it is on right now. Continue on that page -- \
@@ -117,7 +119,8 @@ def run(text: str, live: bool = False, timezone: str | None = None,
 
     now = now or datetime.now().astimezone()
     zone = timezone or toolkit.local_zone()
-    system = SYSTEM.format(now=now.strftime("%A %Y-%m-%dT%H:%M"), tz=zone)
+    system = SYSTEM.format(now=now.strftime("%A %Y-%m-%dT%H:%M"), tz=zone,
+                           contacts=toolkit.local_contact_hint())
 
     try:
         client = _client()

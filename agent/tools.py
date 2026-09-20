@@ -11,7 +11,9 @@ until someone runs `python -m agent.tools --schema` against a real API key.
 """
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 # Composio action slugs. Verify with --schema; slugs are stable, arguments drift.
 CALENDAR_CREATE = "GOOGLECALENDAR_CREATE_EVENT"
@@ -30,6 +32,7 @@ TOOLKIT_VERSIONS = {
     CALENDAR_TOOLKIT: CALENDAR_TOOLKIT_VERSION,
     GMAIL_TOOLKIT: GMAIL_TOOLKIT_VERSION,
 }
+CONTACTS_PATH = Path(__file__).with_name("contacts.json")
 
 SCHEMAS = [
     {
@@ -271,9 +274,48 @@ def _clean_list(values) -> list[str]:
     return [str(value).strip() for value in values if str(value).strip()]
 
 
+def _local_contacts() -> dict[str, str]:
+    try:
+        contacts = json.loads(CONTACTS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(name).strip().lower(): str(email).strip()
+            for name, email in contacts.items()
+            if str(name).strip() and str(email).strip()}
+
+
+def local_contact_email(name: str) -> str | None:
+    """Return a locally saved address for a spoken/written contact name."""
+    contact = str(name).strip()
+    if not contact or "@" in contact:
+        return contact or None
+    return _local_contacts().get(contact.lower())
+
+
+def local_contact_hint() -> str:
+    contacts = _local_contacts()
+    if not contacts:
+        return "none"
+    return ", ".join(f"{name} <{email}>" for name, email in sorted(contacts.items()))
+
+
+def local_contact_result(query: str) -> str | None:
+    email = local_contact_email(query)
+    if not email:
+        return None
+    return f"LOCAL CONTACT: {str(query).strip()} <{email}>"
+
+
+def _resolve_local_contacts(values) -> list[str]:
+    resolved = []
+    for value in _clean_list(values):
+        resolved.append(local_contact_email(value) or value)
+    return resolved
+
+
 def _compose_email_draft(args: dict, timezone: str | None = None) -> dict:
     """Our fields -> GMAIL_CREATE_EMAIL_DRAFT's arguments."""
-    to = _clean_list(args.get("to"))
+    to = _resolve_local_contacts(args.get("to"))
     out = {
         "subject": args["subject"],
         "body": args["body"],
@@ -293,6 +335,14 @@ def _compose_email_draft(args: dict, timezone: str | None = None) -> dict:
 
 def _compose_contact_search(args: dict, timezone: str | None = None) -> dict:
     """Our fields -> GMAIL_SEARCH_PEOPLE's arguments."""
+    email = local_contact_email(args["query"])
+    if email:
+        return {
+            "query": email,
+            "page_size": 1,
+            "person_fields": "names,emailAddresses",
+            "other_contacts": False,
+        }
     return {
         "query": args["query"],
         "page_size": 5,
@@ -331,7 +381,7 @@ def describe(name: str, args: dict) -> str:
     if name == "create_calendar_event":
         return f"Calendar event: {args.get('summary', '?')} at {args.get('start', '?')}"
     if name == "create_email_draft":
-        to = _clean_list(args.get("to"))
+        to = _resolve_local_contacts(args.get("to"))
         if to:
             return f"Gmail draft to {', '.join(to)}: {args.get('subject', '?')}"
         return f"Gmail draft: {args.get('subject', '?')}"
@@ -353,6 +403,10 @@ def execute(name: str, args: dict, user_id: str | None = None,
     """Run the tool for real. Raises if its backend is not configured."""
     if name in LOCAL_CALLS:
         return LOCAL_CALLS[name](args)
+    if name == "search_email_contacts":
+        local = local_contact_result(args.get("query", ""))
+        if local:
+            return local
     if name not in COMPOSIO_CALLS:
         raise ValueError(f"unknown tool {name!r}")
     if not os.environ.get("COMPOSIO_API_KEY"):
