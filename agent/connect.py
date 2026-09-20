@@ -1,6 +1,7 @@
-"""One-time Google Calendar OAuth, so the agent can act as you.
+"""One-time Composio OAuth, so the agent can act as you.
 
-    python -m agent.connect
+    python -m agent.connect                    # Google Calendar
+    python -m agent.connect --toolkit gmail    # Gmail drafts
 
 Prints a Composio Connect link, waits while you grant access in your browser,
 then confirms. You authorise on Google's own page -- no credential passes
@@ -46,7 +47,8 @@ def auth_config_for(composio, toolkit: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--toolkit", default=TOOLKIT, help=f"toolkit slug (default: {TOOLKIT})")
+    parser.add_argument("--toolkit", default=TOOLKIT,
+                        help=f"toolkit slug, e.g. googlecalendar or gmail (default: {TOOLKIT})")
     parser.add_argument("--user", default=DEFAULT_USER,
                         help=f"Composio user id (default: {DEFAULT_USER}; must match at run time)")
     parser.add_argument("--auth-config", default=os.environ.get("COMPOSIO_AUTH_CONFIG_ID"),
@@ -62,7 +64,7 @@ def main() -> None:
     auth_config = args.auth_config or auth_config_for(composio, args.toolkit)
 
     request = composio.connected_accounts.link(args.user, auth_config)
-    print(f"\nOpen this and grant calendar access as yourself:\n\n  {request.redirect_url}\n")
+    print(f"\nOpen this and grant {args.toolkit} access as yourself:\n\n  {request.redirect_url}\n")
     print("Waiting for you to finish in the browser (Ctrl+C to give up)...")
     account = request.wait_for_connection()
     print(f"\nConnected. account={getattr(account, 'id', account)} user_id={args.user!r}")

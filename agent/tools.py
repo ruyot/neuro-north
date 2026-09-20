@@ -15,13 +15,21 @@ import os
 
 # Composio action slugs. Verify with --schema; slugs are stable, arguments drift.
 CALENDAR_CREATE = "GOOGLECALENDAR_CREATE_EVENT"
+GMAIL_CREATE_DRAFT = "GMAIL_CREATE_EMAIL_DRAFT"
+GMAIL_SEARCH_PEOPLE = "GMAIL_SEARCH_PEOPLE"
 
 # Direct execution refuses to run without a pinned version ("latest" is rejected).
 # Pinned rather than version-skipped on purpose: the argument mapping below was
 # read off THIS version, and a toolkit update the night before a demo should not
 # be able to change what the speller sends. `--versions` lists newer ones.
-TOOLKIT = "googlecalendar"
-TOOLKIT_VERSION = os.environ.get("COMPOSIO_GOOGLECALENDAR_VERSION", "20260915_00")
+CALENDAR_TOOLKIT = "googlecalendar"
+GMAIL_TOOLKIT = "gmail"
+CALENDAR_TOOLKIT_VERSION = os.environ.get("COMPOSIO_GOOGLECALENDAR_VERSION", "20260915_00")
+GMAIL_TOOLKIT_VERSION = os.environ.get("COMPOSIO_GMAIL_VERSION", "20260915_00")
+TOOLKIT_VERSIONS = {
+    CALENDAR_TOOLKIT: CALENDAR_TOOLKIT_VERSION,
+    GMAIL_TOOLKIT: GMAIL_TOOLKIT_VERSION,
+}
 
 SCHEMAS = [
     {
@@ -62,7 +70,78 @@ SCHEMAS = [
                 "additionalProperties": False,
             },
         },
-    }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_email_contacts",
+            "description": (
+                "Search Gmail contacts and other contacts by name, nickname, or email. "
+                "Use before creating an email draft when the user names a person "
+                "without spelling an email address."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The person name, nickname, or email fragment to search for.",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_email_draft",
+            "description": (
+                "Create a Gmail draft. Never sends email. Use for requests to email, "
+                "write, message, or tell someone something. Only include recipients "
+                "when the user provided a real email address, or after a contact search "
+                "returns a likely email address."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional To recipients. Each must be a real address like "
+                            "user@example.com or Display Name <user@example.com>. "
+                            "Do not invent addresses for plain names."
+                        ),
+                    },
+                    "cc": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional CC recipients; valid email addresses only.",
+                    },
+                    "bcc": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional BCC recipients; valid email addresses only.",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Short subject line, inferred from the message.",
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "Plain-text email body. Keep it concise and natural. "
+                            "Do not mention the brain-computer interface unless asked."
+                        ),
+                    },
+                },
+                "required": ["subject", "body"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -114,8 +193,48 @@ def _compose_calendar(args: dict, timezone: str) -> dict:
     }
 
 
+def _clean_list(values) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _compose_email_draft(args: dict, timezone: str | None = None) -> dict:
+    """Our fields -> GMAIL_CREATE_EMAIL_DRAFT's arguments."""
+    to = _clean_list(args.get("to"))
+    out = {
+        "subject": args["subject"],
+        "body": args["body"],
+        "is_html": False,
+        "user_id": "me",
+    }
+    if to:
+        out["recipient_email"] = to[0]
+    if len(to) > 1:
+        out["extra_recipients"] = to[1:]
+    for field in ("cc", "bcc"):
+        values = _clean_list(args.get(field))
+        if values:
+            out[field] = values
+    return out
+
+
+def _compose_contact_search(args: dict, timezone: str | None = None) -> dict:
+    """Our fields -> GMAIL_SEARCH_PEOPLE's arguments."""
+    return {
+        "query": args["query"],
+        "page_size": 5,
+        "person_fields": "names,emailAddresses",
+        "other_contacts": True,
+    }
+
+
 COMPOSIO_CALLS = {
-    "create_calendar_event": (CALENDAR_CREATE, _compose_calendar),
+    "create_calendar_event": (CALENDAR_CREATE, _compose_calendar, CALENDAR_TOOLKIT),
+    "create_email_draft": (GMAIL_CREATE_DRAFT, _compose_email_draft, GMAIL_TOOLKIT),
+    "search_email_contacts": (GMAIL_SEARCH_PEOPLE, _compose_contact_search, GMAIL_TOOLKIT),
 }
 
 
@@ -123,6 +242,13 @@ def describe(name: str, args: dict) -> str:
     """One human line for the console and the speller's status panel."""
     if name == "create_calendar_event":
         return f"{args.get('summary', '?')} @ {args.get('start', '?')}"
+    if name == "create_email_draft":
+        to = _clean_list(args.get("to"))
+        if to:
+            return f"email draft to {', '.join(to)}: {args.get('subject', '?')}"
+        return f"email draft: {args.get('subject', '?')}"
+    if name == "search_email_contacts":
+        return f"contacts matching {args.get('query', '?')}"
     return f"{name}({args})"
 
 
@@ -136,8 +262,8 @@ def execute(name: str, args: dict, user_id: str | None = None,
 
     from composio import Composio
 
-    slug, compose = COMPOSIO_CALLS[name]
-    composio = Composio(toolkit_versions={TOOLKIT: TOOLKIT_VERSION})
+    slug, compose, _toolkit = COMPOSIO_CALLS[name]
+    composio = Composio(toolkit_versions=TOOLKIT_VERSIONS)
     result = composio.tools.execute(
         slug,
         user_id=user_id or os.environ.get("COMPOSIO_USER_ID", "speller"),
@@ -164,14 +290,15 @@ def main() -> None:
     from composio import Composio
 
     composio = Composio()
-    for slug, _ in COMPOSIO_CALLS.values():
+    for slug, _, toolkit in COMPOSIO_CALLS.values():
         raw = composio.tools.get_raw_composio_tool_by_slug(slug)
         if args.versions:
             print(f"\n=== {slug} ===")
-            print(f"pinned:  {TOOLKIT_VERSION}")
+            pinned = TOOLKIT_VERSIONS[toolkit]
+            print(f"pinned:  {pinned}")
             print(f"current: {getattr(raw, 'version', '?')}")
             for version in (getattr(raw, "available_versions", None) or [])[:8]:
-                print(f"  {version}{'   <- pinned' if version == TOOLKIT_VERSION else ''}")
+                print(f"  {version}{'   <- pinned' if version == pinned else ''}")
             continue
         print(f"\n=== {slug} (version {getattr(raw, 'version', '?')}) ===")
         params = json.loads(json.dumps(getattr(raw, "input_parameters", {}), default=str))

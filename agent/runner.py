@@ -3,8 +3,8 @@
 Deliberately the ONLY file that knows which model provider is in use. Swapping
 OpenAI for another vendor should not touch tools.py, the speller, or the adapter.
 
-Dry-run is the default. A demo gets iterated on dozens of times, and every live
-run writes a real event to a real calendar, so executing is opt-in (`live=True`).
+Dry-run is the default. A demo gets iterated on dozens of times, and live runs
+write to real accounts, so executing is opt-in (`live=True`).
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from datetime import datetime
 from . import tools as toolkit
 
 DEFAULT_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
-MAX_STEPS = 4          # a calendar event is one call; the rest is room for a chain
+MAX_STEPS = 4          # one action is typical; the rest is room for a chain
 
 SYSTEM = """You act on messages typed through a brain-computer interface.
 
@@ -30,6 +30,11 @@ emit absolute ISO-8601 timestamps in the user's LOCAL time with NO offset \
 
 Choose sensible defaults rather than refusing: one hour is a good default \
 duration, and a bare time like "3pm" means the next occurrence of it.
+
+For email requests, create a Gmail draft only. Never send email. If the user \
+names someone without giving a real email address, search email contacts first \
+and use a likely returned email address. If contact search is unavailable or no \
+reasonable match is returned, omit the recipient rather than inventing one.
 
 When you have made the tool calls the message calls for, reply with one short \
 sentence confirming what you did."""
@@ -49,7 +54,11 @@ class Result:
             return f"agent failed: {self.error}"
         if not self.calls:
             return "agent: nothing to do"
-        done = "created" if self.live else "would create"
+        creates = {"create_calendar_event", "create_email_draft"}
+        if all(name in creates for name, _ in self.calls):
+            done = "created" if self.live else "would create"
+        else:
+            done = "ran" if self.live else "would run"
         return f"{done}: " + "; ".join(toolkit.describe(n, a) for n, a in self.calls)
 
 
@@ -122,9 +131,9 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="Run one message through the agent.")
-    parser.add_argument("text", help="what the speller produced, e.g. 'dentist 3pm tomorrow'")
+    parser.add_argument("text", help="what the speller produced, e.g. 'dentist 3pm' or 'email sara running late'")
     parser.add_argument("--live", action="store_true",
-                        help="actually execute the tool calls (writes to your real calendar)")
+                        help="actually execute tool calls (writes real calendar events or Gmail drafts)")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--tz", default=None, help="timezone name shown to the model")
     args = parser.parse_args()
