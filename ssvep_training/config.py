@@ -43,3 +43,12 @@ USE_ENSEMBLE_TRCA = True
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 TRAINING_DATA_DIR = os.path.join(PROJECT_ROOT, "training_data")
 RESULTS_DIR = os.path.join(PROJECT_ROOT, "results")
+
+# IMU integration from imu-head-gestures (c0b1616 / 2001ae8).
+# Relative gyro thresholds; axis/sign mapping still needs a worn-headset check.
+GESTURE_THRESHOLD = 6.0
+GESTURE_COOLDOWN = 0.6
+GESTURE_MIN_SPEED = 0.08  # firmware stream units, not raw 16-bit counts
+GESTURE_DWELL = 0.08     # sustained motion before firing
+GESTURE_REARM = 0.25     # quiet motion required before another gesture
+GESTURE_PROFILE_PATH = os.path.join(RESULTS_DIR, "imu_profile.json")

@@ -24,12 +24,13 @@ class RecordingProcess(Process):
 
     def __init__(self, port: str | None = None, session_dir: str | None = None,
                  settle: float | None = None, predict_session: str | None = None,
-                 channels=None, decoder: str = "cca"):
+                 channels=None, decoder: str = "cca", enable_gestures: bool = False):
         """session_dir: where to save the recording (calibration); None = don't save.
         predict_session: calibration to train TRCA on for live typing; None = no predictions."""
         super().__init__(daemon=True)
         self.port = port
         self.decoder = decoder            # "cca" (no calibration needed) or "trca"
+        self.enable_gestures = enable_gestures
         self.channels = channels          # board channels 1-8; None = all
         self.session_dir = session_dir
         self.settle = settle
@@ -45,11 +46,17 @@ class RecordingProcess(Process):
         self.last_sigma = Value("d", 0.0)      # heuristic decoy contrast of last_prediction
         self.gaze = Value("d", 0.0)            # window to classify; 0 = config default
         self.prediction_count = Value("i", 0)
+        self.selection_version = Value("i", 0)
+        self.predict_version = Value("i", 0)
+        self.prediction_version = Value("i", -1)
+        self.gesture = Value("i", -1)
+        self.gesture_count = Value("i", 0)
         self._running = Event()
         self._running.set()
 
     def mark_onset(self, code: int) -> None:
         """Call at the first flicker frame: the child stamps `code` into the EEG."""
+        self.cancel_prediction()
         self.marker_code.value = int(code)
         with self.onset_count.get_lock():
             self.onset_count.value += 1
@@ -60,8 +67,22 @@ class RecordingProcess(Process):
 
     def request_prediction(self) -> None:
         """Call after a live trial's flicker ends; watch prediction_count for the answer."""
+        self.predict_version.value = self.selection_version.value
         with self.predict_count.get_lock():
             self.predict_count.value += 1
+
+    def cancel_prediction(self) -> None:
+        """Invalidate pending results even if the child is already decoding."""
+        with self.selection_version.get_lock():
+            self.selection_version.value += 1
+
+    def prediction_is_current(self) -> bool:
+        return self.prediction_version.value == self.selection_version.value
+
+    def read_gesture(self) -> tuple[int, int]:
+        """Atomic sequence/code snapshot; ignore accumulated warmup events."""
+        with self.gesture_count.get_lock():
+            return self.gesture_count.value, self.gesture.value
 
     def stop(self) -> None:
         self._running.clear()
@@ -100,16 +121,44 @@ class RecordingProcess(Process):
 
         recorded = 0
 
+        gestures = None
+        if self.enable_gestures:
+            try:
+                from .head import GESTURES, Gestures, gyro_rows
+                gestures, gyro = Gestures.from_config(board.rate), gyro_rows(board.board_id)
+                print("[head] enabled; keep still during startup, then verify all four directions")
+            except Exception:
+                traceback.print_exc()
+                print("[head] setup failed; keyboard controls remain available")
+
         def drain():
-            nonlocal recorded
+            nonlocal recorded, gestures
             chunk = board.shim.get_board_data()
             if chunk.shape[1]:
                 chunks.append(chunk)
                 recorded += chunk.shape[1]
+                if gestures is not None:
+                    try:
+                        name = gestures.feed(chunk[gyro])
+                        if name is not None:
+                            # Invalidate EEG before announcing the action to the UI.
+                            self.cancel_prediction()
+                            with self.gesture_count.get_lock():
+                                self.gesture.value = GESTURES.index(name)
+                                self.gesture_count.value += 1
+                            print(f"[head] {name}")
+                    except Exception:
+                        traceback.print_exc()
+                        print("[head] detector disabled after an error; keyboard controls remain available")
+                        gestures = None
 
         def save():
             if self.session_dir and chunks:
-                save_session(self.session_dir, np.hstack(chunks), {**meta, "n_markers": seen_onset})
+                save_session(self.session_dir, np.hstack(chunks),
+                             {**meta, "n_markers": seen_onset,
+                              "head_gestures_requested": self.enable_gestures,
+                              "head_gestures_active": gestures is not None,
+                              "gesture_count": self.gesture_count.value})
 
         # Enough recent data for the LONGEST window a live selection may grow to,
         # not just the calibration flicker, or a grown window gets truncated.
@@ -145,6 +194,7 @@ class RecordingProcess(Process):
                 print("[hold] packet discontinuity in trial/filter history; no prediction")
                 self.last_prediction.value = -1
                 self.last_sigma.value = float("-inf")
+                self.prediction_version.value = pending_version
                 with self.prediction_count.get_lock():
                     self.prediction_count.value += 1
                 return True
@@ -173,12 +223,14 @@ class RecordingProcess(Process):
                   + f"   margin {margin:+.2f}  {sigma:+.1f} contrast  ->  {letters[choice]}")
             self.last_prediction.value = choice
             self.last_sigma.value = float(sigma)
+            self.prediction_version.value = pending_version
             with self.prediction_count.get_lock():
                 self.prediction_count.value += 1
             return True
 
         seen_onset, seen_save, seen_predict, last_drain = 0, 0, 0, 0.0
         pending_since = None
+        pending_version = -1
         # Every trial is filtered with FILTER_HISTORY seconds of EEG before its
         # onset, so don't report ready until that much has actually ARRIVED.
         # Waiting on the clock alone once let a wedged board pass this check and
@@ -209,10 +261,13 @@ class RecordingProcess(Process):
                 # asked for a prediction and nothing ever answered.
                 if self.predict_count.value != seen_predict:
                     seen_predict = self.predict_count.value
+                    pending_version = self.predict_version.value
                     pending_since = time.monotonic()
                 if pending_since is not None:
                     drain()
-                    if predict():
+                    if pending_version != self.selection_version.value:
+                        pending_since = None
+                    elif predict():
                         pending_since = None
                     elif time.monotonic() - pending_since > PREDICT_TIMEOUT:
                         print("[predict] trial data never arrived - no prediction for this selection")

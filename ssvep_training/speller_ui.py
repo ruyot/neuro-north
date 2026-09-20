@@ -336,6 +336,21 @@ def handle_keys(ui: SpellerUI, boxes: bool) -> bool:
             getattr(ui, name)(*args)
     return True
 
+
+def handle_gestures(ui: SpellerUI, recorder, seen: int) -> int:
+    """Dispatch the newest gesture through the same mapping as arrow keys.
+
+    A gesture cancels EEG even when its action is a no-op (empty suggestion).
+    """
+    from .head import GESTURES
+    count, code = recorder.read_gesture()
+    if count != seen and 0 <= code < len(GESTURES):
+        recorder.cancel_prediction()
+        name, *args = KEY_ACTIONS[GESTURES[code]]
+        getattr(ui, name)(*args)
+    return count
+
+
 def run_keys(win, ui: SpellerUI, squares) -> None:
     """No board, no flicker: boxes shown dim grey, 1 / 2 pick."""
     for sq in squares:
@@ -382,6 +397,7 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
 
     clock = core.Clock()
     state, t_mark, t_req, t_fb, seen, actions_at_mark = "mark", 0.0, 0.0, 0.0, 0, 0
+    seen_gesture = recorder.read_gesture()[0]
     if manual:
         state = "ready"
     t_prepare = 0.0
@@ -437,9 +453,17 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
 
             if not handle_keys(ui, boxes=False):
                 return
+            newest_gesture = handle_gestures(ui, recorder, seen_gesture)
+            if newest_gesture != seen_gesture:
+                seen_gesture = newest_gesture
+                awaiting = False
+                t_fb, state = t, "feedback"
+                continue
 
             if state == "flicker":
                 if ui.action_count != actions_at_mark:
+                    recorder.cancel_prediction()
+                    awaiting = False
                     t_fb, state = t, "feedback"   # recover on a dark screen
                 elif not awaiting and t - t_mark >= cfg.VISUAL_LATENCY + gaze:
                     late = win.nDroppedFrames - dropped_at_mark
@@ -450,6 +474,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
                     t_req, awaiting = t, True
                 elif awaiting and recorder.prediction_count.value != seen:
                     seen = recorder.prediction_count.value
+                    if not recorder.prediction_is_current():
+                        continue  # cancelled/older trial: wait for this trial's result
                     awaiting = False
                     sigma = recorder.last_sigma.value
                     choice = recorder.last_prediction.value
@@ -468,6 +494,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
                               f"keep looking, window now {gaze:.1f}s")
                 elif awaiting and (t - t_req > PREDICTION_TIMEOUT or not recorder.is_alive()):
                     print("[warn] no prediction for this selection - starting over")
+                    recorder.cancel_prediction()
+                    awaiting = False
                     t_fb, state = t, "feedback"
             elif state == "feedback" and t - t_fb >= FEEDBACK_SECONDS:
                 state = "ready" if manual else "mark"
@@ -504,6 +532,8 @@ def main() -> None:
                              "the same way a calibration is (live trials are marked 99, unlabelled)")
     parser.add_argument("--manual", action="store_true",
                         help="SPACE starts one EEG selection after a preparation cue; waits between choices")
+    parser.add_argument("--no-imu", action="store_true",
+                        help="disable head gestures and use arrow keys only")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
@@ -546,7 +576,8 @@ def main() -> None:
             live_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("live_%Y%m%d_%H%M%S"))
             print(f"Recording this run to {live_dir}")
         recorder = RecordingProcess(port=args.port, predict_session=session, session_dir=live_dir,
-                                    channels=channels, decoder=args.decoder)
+                                    channels=channels, decoder=args.decoder,
+                                    enable_gestures=not args.no_imu)
         recorder.start()
 
     from psychopy import core
@@ -568,8 +599,9 @@ def main() -> None:
         how = ("1 / 2 = left / right box" if args.keys else
                "SPACE, then look at a box" if args.manual else "Look at a box")
         if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
-                                 "Left arrow = wheel    Right arrow = space\n"
-                                 "Up / Down = suggestions    Escape quits\n\n"
+                                 "Head left / right = wheel / finish word\n"
+                                 "Head up / down = accept suggestion\n"
+                                 "Arrow keys also work. Escape quits.\n\n"
                                  "Press SPACE to start.", name="Speller"):
             return
         if recorder:

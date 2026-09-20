@@ -18,5 +18,6 @@ enable_eeg_channels = stream.enable_eeg_channels
 clean = stream.clean
 NAMES = stream.NAMES
 PORT = stream.PORT
+GYRO = stream.GYRO
 cca_score = stream.cca_score
 cca_reference = stream.cca_reference

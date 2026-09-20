@@ -277,6 +277,11 @@ def main():
         empty = 0
         roll = None               # rolling window, needed for any useful fft
         required = args.window + (4 * rate if args.filter else 0)
+        gestures = None
+        if args.real:
+            from ssvep_training.head import Gestures
+            gestures = Gestures.from_config(rate)
+            print("[head] keep still during startup; then check left/right/up/down against gyro pk")
 
         # 5. Drain the buffer twice a second and print the newest sample.
         end = time.time() + args.seconds
@@ -292,6 +297,18 @@ def main():
                 continue
             empty = 0
             newest = data[:, -1]                 # last column = most recent sample
+            # Feed during EEG/filter warmup too. Small chunks match the recorder.
+            head_info = ""
+            if gestures is not None:
+                hits = []
+                for start in range(0, data.shape[1], 3):
+                    fired = gestures.feed(data[GYRO, start:start + 3])
+                    if fired:
+                        hits.append(fired)
+                peaks = np.abs(data[GYRO] - np.median(data[GYRO], axis=1, keepdims=True)).max(axis=1)
+                head_info = " | gyro pk: " + " ".join(f"{p:9.2f}" for p in peaks)
+                if hits:
+                    print("[head] " + ", ".join(hits))
             # Printing one sample of a 60 Hz-dominated signal every 0.5s just
             # samples random phase, which looks like noise however good the
             # contact is. RMS over the whole window is the honest summary.
@@ -316,6 +333,7 @@ def main():
                 acc = " ".join(f"{newest[r]:6.2f}" for r in ACCEL)
                 line += f" | loff P{leadoff(newest[LOFF_P])} N{leadoff(newest[LOFF_N])}"
                 line += f" | accel: {acc}"
+                line += head_info
             print(line)
     finally:
         # 6. Always release, or the serial port stays locked. stop_stream can

@@ -98,6 +98,8 @@ class PipelineTests(unittest.TestCase):
             ui.set_progress = lambda *args: None
             recorder = NS(prediction_count=NS(value=0), last_sigma=NS(value=contrast),
                           last_prediction=NS(value=0), gaze=NS(value=0),
+                          read_gesture=lambda: (0, -1), cancel_prediction=lambda: None,
+                          prediction_is_current=lambda: True,
                           mark_onset=lambda *args: None, is_alive=lambda: True)
             def request():
                 recorder.prediction_count.value += 1
