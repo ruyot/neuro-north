@@ -14,6 +14,34 @@ def feed_all(detector, data, chunk=3):
 
 
 class SetupTests(unittest.TestCase):
+    def profile(self):
+        return {'version': 1, 'gestures': list(GESTURES),
+                'directions': [[0,0,-1], [0,0,1], [0,-1,0], [0,1,0]],
+                'minimum_speed': [.6]*4, 'rest_baseline': [.01]*3, 'rest_noise': [.01]*3}
+
+    def test_constant_startup_motion_cannot_replace_measured_rest(self):
+        profile = self.profile()
+        detector = Gestures(125, profile=profile)
+        startup = np.tile(np.array([.063, .259, -.117])[:, None], (1, 75))
+        self.assertEqual(feed_all(detector, startup), [])
+        np.testing.assert_allclose(detector.baseline, profile['rest_baseline'])
+        rest = np.full((3, 125), .01)
+        out = pulse([0, 0, -1], amplitude=2)
+        signal = np.hstack([rest, out+.01, rest, -out+.01, rest, out+.01, rest])
+        self.assertEqual(feed_all(detector, signal), ['left', 'left'])
+
+    def test_normal_jitter_does_not_prevent_rearming(self):
+        profile = self.profile()
+        rest = np.full((3, 125), .01)
+        # Every sample exceeds the .04 baseline-learning limit on one axis,
+        # but is well below calibrated gesture strength (.6).
+        jitter = rest.copy(); jitter[0] += np.tile([.08, -.08], 63)[:125]
+        out = pulse([0, 0, -1], amplitude=2)
+        signal = np.hstack([rest, out+.01, jitter, -out+.01, jitter, out+.01, jitter])
+        for chunk in (1, 3, 25):
+            self.assertEqual(feed_all(Gestures(125, profile=profile), signal, chunk), ['left', 'left'])
+        self.assertEqual(feed_all(Gestures(125, profile=profile), np.hstack([rest, np.tile(jitter, 10)])), [])
+
     def test_subunit_motion_detected_and_one_sample_spike_ignored(self):
         rest = np.zeros((3, 125))
         signal = np.hstack([rest, pulse([0, 0, -1]), rest])
@@ -33,6 +61,43 @@ class SetupTests(unittest.TestCase):
     def test_sustained_turn_does_not_repeat(self):
         signal = np.zeros((3, 750)); signal[2, 125:625] = .3
         self.assertEqual(feed_all(Gestures(125), signal), ['right'])
+
+    def test_partial_return_does_not_lock_out_subsequent_swipes(self):
+        rest = np.zeros((3, 125))
+        # Return only half the estimated angle. The former integration-only
+        # gate stays disarmed forever, even through later deliberate swipes.
+        for direction, name in [([0, 0, -1], 'left'), ([0, 0, 1], 'right'),
+                                ([0, -1, 0], 'up'), ([0, 1, 0], 'down')]:
+            out = pulse(direction)
+            signal = np.hstack([rest, out, rest, -.5*out, rest,
+                                out, rest, -.5*out, rest, out, rest])
+            for chunk in (1, 3, 25):
+                with self.subTest(direction=name, chunk=chunk):
+                    self.assertEqual(feed_all(Gestures(125), signal, chunk), [name]*3)
+
+    def test_holding_pose_and_reverse_spike_do_not_rearm(self):
+        rest = np.zeros((3, 125))
+        out = pulse([0, 0, -1])
+        spike = np.zeros((3, 125)); spike[2, 10] = .3
+        signal = np.hstack([rest, out, np.tile(rest, 10), spike, rest, out, rest])
+        self.assertEqual(feed_all(Gestures(125), signal), ['left'])
+
+    def test_diagnostics_identify_reset_gate_without_changing_detection(self):
+        import json
+        detector = Gestures(125)
+        rest = np.zeros((3, 125))
+        out = pulse([0, 0, -1])
+        feed_all(detector, np.hstack([rest, out, rest]))
+        state = detector.diagnostics(reset_peak=True)
+        self.assertEqual(state['waiting'], ['return'])
+        self.assertGreater(state['peak_ratio'], 1)
+        self.assertFalse(detector.armed)
+        json.dumps(state)  # trace must remain serializable in session.json
+        feed_all(detector, -out)
+        self.assertEqual(detector.diagnostics()['waiting'], ['stillness'])
+        feed_all(detector, rest)
+        self.assertEqual(detector.diagnostics()['waiting'], [])
+        self.assertEqual(feed_all(detector, out), ['left'])
 
     def test_learns_rotated_mount_and_native_scale(self):
         yaw = np.array([1., 0, 1.]) / np.sqrt(2)

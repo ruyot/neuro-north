@@ -54,6 +54,9 @@ class Gestures:
         self.candidate_travel = 0.0
         self.active_direction = None
         self.travel = self.peak_travel = 0.0
+        self.return_count = 0
+        self.return_seen = False
+        self.peak_ratio = 0.0
         directions = np.zeros((4, 3))
         for axis, pair in AXIS_GESTURES.items():
             directions[GESTURES.index(pair[0]), axis] = -1
@@ -61,6 +64,7 @@ class Gestures:
         self.directions = directions
         self.minimum = np.full(4, NOISE_FLOOR)
         self.profile = profile
+        self.rest_reference = None
         if profile is not None:
             if profile.get("version") != 1 or profile.get("gestures") != list(GESTURES):
                 raise ValueError("Unsupported IMU profile; rerun imu_setup")
@@ -71,6 +75,14 @@ class Gestures:
                     or (self.minimum <= 0).any()
                     or not np.allclose(np.linalg.norm(self.directions, axis=1), 1)):
                 raise ValueError("Invalid IMU profile; rerun imu_setup")
+            if 'rest_baseline' in profile and 'rest_noise' in profile:
+                baseline = np.asarray(profile['rest_baseline'], dtype=float)
+                noise = np.asarray(profile['rest_noise'], dtype=float)
+                if (baseline.shape != (3,) or noise.shape != (3,)
+                        or not np.isfinite(baseline).all() or not np.isfinite(noise).all()
+                        or (noise < 0).any()):
+                    raise ValueError('Invalid resting IMU measurements; rerun imu_setup')
+                self.rest_reference = (baseline, noise)
         self.levels = None
 
     @classmethod
@@ -87,7 +99,15 @@ class Gestures:
         self.rest = np.column_stack((self.rest, value))[:, -self.warmup:]
         self.baseline = np.median(self.rest, axis=1)
         if self.rest.shape[1] >= self.warmup:
-            spread = 1.4826 * np.median(np.abs(self.rest - self.baseline[:, None]), axis=1)
+            if self.levels is None and self.rest_reference is not None:
+                # Startup packets can contain almost constant stale motion.
+                # Low variance does NOT make that a valid zero-rate baseline.
+                # Use the explicitly measured resting reference, then let the
+                # existing quiet-sample adaptation track fresh resting data.
+                self.baseline, spread = (v.copy() for v in self.rest_reference)
+                self.rest = np.zeros((3, 0))
+            else:
+                spread = 1.4826 * np.median(np.abs(self.rest - self.baseline[:, None]), axis=1)
             self.limit = np.maximum(self.threshold * spread, NOISE_FLOOR)
             projected = np.sqrt((self.directions ** 2) @ (spread ** 2))
             self.levels = np.maximum(self.minimum, self.threshold * projected)
@@ -103,17 +123,34 @@ class Gestures:
                 self._update_rest(value)
                 continue
             dev = value - self.baseline
+            self.peak_ratio = max(self.peak_ratio, float(np.max((self.directions @ dev) / self.levels)))
             quiet = (np.abs(dev) < self.limit * .5).all()
-            self.quiet_count = self.quiet_count + 1 if quiet else 0
+            # Baseline estimation needs genuinely quiet samples. Rearming only
+            # needs motion to settle below gesture strength: using the much
+            # tighter noise gate here can permanently reject normal head jitter.
+            # Half the lowest activation level provides release hysteresis;
+            # vector magnitude also rejects motion along an unmapped roll axis.
+            settled = np.linalg.norm(dev) < .5 * np.min(self.levels)
+            self.quiet_count = self.quiet_count + 1 if settled else 0
             if quiet:
                 self._update_rest(value)
             if not self.armed:
                 # Suppress the reverse rotation used to return to center.
                 # Integrating in native units suffices: only a relative return
                 # to the swipe's starting orientation is tested here.
-                self.travel += float(self.active_direction @ dev) / self.rate
+                projection = float(self.active_direction @ dev)
+                self.travel += projection / self.rate
                 self.peak_travel = max(self.peak_travel, self.travel)
-                returned = self.travel <= .35 * self.peak_travel
+                # Gyro integration is not an absolute head-position estimate:
+                # a partial return or bias error can leave a residual forever.
+                # Also recognize a sustained reverse movement, then require the
+                # SAME quiet/cooldown gate below. Holding the turned pose alone
+                # never rearms, and the return itself cannot fire an action.
+                reverse = (-projection > .5 * np.linalg.norm(self.limit)
+                           and -projection >= .7 * np.linalg.norm(dev))
+                self.return_count = self.return_count + 1 if reverse else 0
+                self.return_seen |= self.return_count >= self.dwell
+                returned = self.travel <= .35 * self.peak_travel or self.return_seen
                 if returned and self.since >= self.hold and self.quiet_count >= self.rearm:
                     self.armed = True
                 else:
@@ -138,8 +175,35 @@ class Gestures:
                 self.armed = False
                 self.active_direction = self.directions[choice]
                 self.travel = self.peak_travel = self.candidate_travel
+                self.return_count, self.return_seen = 0, False
                 self.candidate, self.candidate_count = -1, 0
         return last_hit
+
+    def diagnostics(self, reset_peak=False):
+        """Expose the actual gate without changing detector state or thresholds."""
+        returned = self.return_seen or self.travel <= .35 * self.peak_travel
+        waiting = []
+        if self.levels is None:
+            waiting.append('warmup')
+        elif not self.armed:
+            if not returned:
+                waiting.append('return')
+            if self.quiet_count < self.rearm:
+                waiting.append('stillness')
+            if self.since < self.hold:
+                waiting.append('cooldown')
+        state = {'armed': self.armed, 'waiting': waiting,
+                 'quiet_samples': self.quiet_count, 'quiet_required': self.rearm,
+                 'return_seen': bool(self.return_seen), 'travel': self.travel,
+                 'peak_travel': self.peak_travel, 'peak_ratio': self.peak_ratio,
+                 'candidate_samples': self.candidate_count,
+                 'baseline': self.baseline.tolist() if self.baseline is not None else None,
+                 'quiet_limits': (self.limit * .5).tolist() if self.limit is not None else None,
+                 'release_speed': float(.5 * np.min(self.levels)) if self.levels is not None else None,
+                 'activation_levels': self.levels.tolist() if self.levels is not None else None}
+        if reset_peak:
+            self.peak_ratio = 0.0
+        return state
 
 
 def replay(path: str) -> None:

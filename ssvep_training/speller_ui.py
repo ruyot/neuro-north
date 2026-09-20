@@ -184,6 +184,7 @@ class SpellerUI:
         plus a space. Does nothing while that suggestion is blank."""
         word = self.suggestions[slot]
         if not word:
+            print('[ui] suggestion unavailable; no word selected')
             return
         language = getattr(self, "language", None)
         if language:
@@ -210,7 +211,10 @@ class SpellerUI:
         done = " ".join(state['confirmed_words'])
         labels = {range_name(r).upper(): r for r in RANGES}
         self.items = list(done + " " if done else "") + [labels[r] for r in state['current_ranges']]
-        words = [candidate['word'] for candidate in state['candidates'][:2]]
+        # A queued finish-word action may already be running. Its intermediate
+        # range result must not expose suggestions that are about to be replaced.
+        words = ([] if getattr(self.language, 'pending', False) else
+                 [candidate['word'] for candidate in state['candidates'][:2]])
         self.set_suggestions(*(words + [""] * (2 - len(words))))
         if reply['error']:
             print(f"[language] {reply['error']} (current word retained)")
@@ -581,6 +585,8 @@ def main() -> None:
                         help="SPACE starts one EEG selection after a preparation cue; waits between choices")
     parser.add_argument("--no-imu", action="store_true",
                         help="disable head gestures and use arrow keys only")
+    parser.add_argument("--imu-debug", action="store_true",
+                        help="print IMU reset/threshold state each second; include trace with --save")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
     parser.add_argument("--engine", choices=["gpt2", "bigram", "off"], default="gpt2",
                         help="local word suggestions (default: gpt2); off restores range-only UI")
@@ -642,7 +648,7 @@ def main() -> None:
             print(f"Recording this run to {live_dir}")
         recorder = RecordingProcess(port=args.port, predict_session=session, session_dir=live_dir,
                                     channels=channels, decoder=args.decoder,
-                                    enable_gestures=not args.no_imu)
+                                    enable_gestures=not args.no_imu, imu_debug=args.imu_debug)
 
     from psychopy import core
     from .stimulus import build_stimuli, build_window, show_message, wait_for_board, wait_for_key

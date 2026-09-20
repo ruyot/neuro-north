@@ -24,13 +24,15 @@ class RecordingProcess(Process):
 
     def __init__(self, port: str | None = None, session_dir: str | None = None,
                  settle: float | None = None, predict_session: str | None = None,
-                 channels=None, decoder: str = "cca", enable_gestures: bool = False):
+                 channels=None, decoder: str = "cca", enable_gestures: bool = False,
+                 imu_debug: bool = False):
         """session_dir: where to save the recording (calibration); None = don't save.
         predict_session: calibration to train TRCA on for live typing; None = no predictions."""
         super().__init__(daemon=True)
         self.port = port
         self.decoder = decoder            # "cca" (no calibration needed) or "trca"
         self.enable_gestures = enable_gestures
+        self.imu_debug = imu_debug
         self.channels = channels          # board channels 1-8; None = all
         self.session_dir = session_dir
         self.settle = settle
@@ -131,8 +133,11 @@ class RecordingProcess(Process):
                 traceback.print_exc()
                 print("[head] setup failed; keyboard controls remain available")
 
+        last_head_report = time.monotonic()
+        head_trace = []
+
         def drain():
-            nonlocal recorded, gestures
+            nonlocal recorded, gestures, last_head_report
             chunk = board.shim.get_board_data()
             if chunk.shape[1]:
                 chunks.append(chunk)
@@ -147,6 +152,16 @@ class RecordingProcess(Process):
                                 self.gesture.value = GESTURES.index(name)
                                 self.gesture_count.value += 1
                             print(f"[head] {name}")
+                        now = time.monotonic()
+                        if self.imu_debug and now - last_head_report >= 1:
+                            status = gestures.diagnostics(reset_peak=True)
+                            head_trace.append({'sample': recorded, **status})
+                            waiting = ','.join(status['waiting']) or 'ready'
+                            print(f"[head-state] {waiting} | peak/threshold={status['peak_ratio']:.2f} "
+                                  f"quiet={status['quiet_samples']}/{status['quiet_required']} "
+                                  f"return={status['return_seen']} "
+                                  f"travel={status['travel']:.3f}/{status['peak_travel']:.3f}", flush=True)
+                            last_head_report = now
                     except Exception:
                         traceback.print_exc()
                         print("[head] detector disabled after an error; keyboard controls remain available")
@@ -158,6 +173,8 @@ class RecordingProcess(Process):
                              {**meta, "n_markers": seen_onset,
                               "head_gestures_requested": self.enable_gestures,
                               "head_gestures_active": gestures is not None,
+                              "head_state": gestures.diagnostics() if gestures is not None else None,
+                              "head_trace": head_trace,
                               "gesture_count": self.gesture_count.value})
 
         # Enough recent data for the LONGEST window a live selection may grow to,

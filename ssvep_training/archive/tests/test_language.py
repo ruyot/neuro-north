@@ -3,18 +3,91 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
+from queue import Queue
 from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
 
 from linguistic_model import ContextModel, DecoderError, LetterRanges, Lexicon, LinguisticDecoder, PipelineSimulator
 from ssvep_training import config as cfg
-from ssvep_training.language import LanguageCore, RangeEvidence
+from ssvep_training.language import LanguageCore, LanguageService, RangeEvidence
 from ssvep_training.speller_ui import RANGES, SpellerUI, run_flicker
 from ssvep_training.recording import RecordingProcess
 
 
 class LanguageTests(unittest.TestCase):
+    def service(self):
+        service = LanguageService.__new__(LanguageService)
+        service.evidence = None
+        service.sequence = 0
+        service.pending = service.failed = service.queued_boundary = False
+        service.current_action = 'startup'
+        service.started = time.monotonic()
+        service.requests, service.replies = Queue(), Queue()
+        service.process = NS(is_alive=lambda: True)
+        return service
+
+    def test_right_swipe_during_inference_finishes_word_after_latest_range(self):
+        core, service = self.core(), self.service()
+        self.select(core, 0, 1)  # first letter of "hi"
+        ui = self.ui()
+        ui.language = service
+        ui.page = 0
+        ui.items = ['ghijkl']
+        ui.select_box(1)
+        # Exactly the observed race: gesture arrives before the select reply.
+        ui.space()
+        ui.space()  # duplicate swipes should not finish another word
+        self.assertTrue(service.queued_boundary)
+        self.assertEqual(service.requests.qsize(), 1)
+        number, action, payload = service.requests.get_nowait()
+        core.apply(action, payload)
+        service.replies.put({'id': number, 'state': core.snapshot(), 'error': None})
+        ui.poll_language()
+        self.assertTrue(service.pending)
+        self.assertEqual(ui.suggestions, ['', ''])
+        number, action, payload = service.requests.get_nowait()
+        self.assertEqual(action, 'boundary')
+        core.apply(action, payload)
+        service.replies.put({'id': number, 'state': core.snapshot(), 'error': None})
+        ui.poll_language()
+        self.assertFalse(service.pending)
+        self.assertEqual(ui.text, 'hi ')
+        self.assertTrue(service.requests.empty())
+
+    def test_delayed_poll_does_not_drop_finish_word(self):
+        service = self.service()
+        self.assertTrue(service.select(('A-F', 'G-L'), 0, 0))
+        service.replies.put({'id': service.sequence, 'state': {}, 'error': None})
+        self.assertTrue(service.submit('boundary', {}))
+        service.poll()
+        self.assertEqual([service.requests.get_nowait()[1] for _ in range(2)], ['select', 'boundary'])
+
+    def test_busy_worker_still_rejects_new_ranges_and_stale_acceptance(self):
+        service = self.service()
+        service.select(('A-F', 'G-L'), 0, 0)
+        self.assertFalse(service.select(('A-F', 'G-L'), 1, 0))
+        self.assertFalse(service.submit('accept', {'word': 'stale'}))
+        self.assertTrue(service.submit('boundary', {}))
+        service.replies.put({'id': service.sequence, 'state': {}, 'error': 'invalid range'})
+        reply = service.poll()
+        self.assertIn('queued finish-word action cancelled', reply['error'])
+        self.assertFalse(service.pending)
+        self.assertFalse(service.queued_boundary)
+        self.assertEqual(service.requests.qsize(), 1)
+
+    def test_duplicate_finish_while_accepting_cannot_add_another_word(self):
+        for action, payload in [('accept', {'word':'apple'}), ('boundary', {})]:
+            service = self.service()
+            service.submit(action, payload)
+            self.assertTrue(service.submit('boundary', {}))
+            self.assertFalse(service.queued_boundary)
+            service.replies.put({'id': service.sequence, 'state': {}, 'error': None})
+            service.poll()
+            self.assertFalse(service.pending)
+            self.assertEqual(service.requests.qsize(), 1)
+
     def core(self):
         ranges = LetterRanges.alphabet_quarters()
         lexicon = Lexicon({'apple': 10, 'hello': 5, 'hi': 2}, ranges)

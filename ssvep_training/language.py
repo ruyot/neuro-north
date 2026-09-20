@@ -145,15 +145,27 @@ class LanguageService:
         self.sequence = 0
         self.pending = True
         self.failed = False
+        self.current_action = 'startup'
+        self.queued_boundary = False
         self.started = time.monotonic()
         self.requests, self.replies = mp.Queue(), mp.Queue()
         self.process = mp.Process(target=_worker, args=(self.requests, self.replies, engine, context), daemon=True)
         self.process.start()
 
     def submit(self, action, payload):
-        if self.pending or self.failed:
+        if self.failed:
             return False
+        if self.pending:
+            if action != 'boundary':
+                return False
+            # A right swipe often arrives while the just-selected range is
+            # being ranked. Preserve that word boundary until the range has
+            # reached the worker. Repeated right swipes refer to the same word.
+            if self.current_action not in ('boundary', 'accept'):
+                self.queued_boundary = True
+            return True
         self.sequence += 1
+        self.current_action = action
         self.pending = True
         self.started = time.monotonic()
         self.requests.put((self.sequence, action, payload))
@@ -180,6 +192,13 @@ class LanguageService:
             self.pending = False
             if latest['state'] is None:
                 self.failed = True
+                self.queued_boundary = False
+            elif self.queued_boundary:
+                self.queued_boundary = False
+                if latest['error']:
+                    latest['error'] += '; queued finish-word action cancelled'
+                else:
+                    self.submit('boundary', {})
             return latest
         if self.pending and (not self.process.is_alive() or time.monotonic()-self.started > 120):
             self.failed, self.pending = True, False
