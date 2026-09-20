@@ -9,7 +9,7 @@ plain method, so the IMU layer only has to call it:
     ui.next_wheel()             left edge: a-f / g-l  <->  m-r / s-z
     ui.space()                  right edge
     ui.pick_suggestion(slot)    top (0) / bottom (1) edge: replace the current word
-    ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges (blank for now)
+    ui.set_suggestions(t, b)    autocomplete fills the top / bottom edges
 
     python -m ssvep_training.speller_ui           # headset + latest calibration
     python -m ssvep_training.speller_ui --keys    # no headset, no flicker: 1 / 2 pick a box
@@ -72,7 +72,7 @@ class SpellerUI:
     """Screen state + drawing. Draws everything except the flicker squares,
     so draw() can go on top of any flicker frame."""
 
-    def __init__(self, win, cues):
+    def __init__(self, win, cues, language=None):
         """cues: the outline per box from stimulus.build_stimuli(), used for pick feedback."""
         from psychopy import visual
 
@@ -81,6 +81,7 @@ class SpellerUI:
         positions, (_, h) = layout(cfg.N_TARGETS)
         self.pages = [RANGES[i:i + len(positions)] for i in range(0, len(RANGES), len(positions))]
         self.page = 0
+        self.language = language
         self.items: list[str] = []      # typed so far: a range ("abcdef"), a letter, or " "
         self.suggestions = ["", ""]     # top, bottom
         self.action_count = 0           # bumped by every action; lets the loop spot one mid-selection
@@ -146,6 +147,12 @@ class SpellerUI:
     def select_box(self, i: int) -> None:
         """Type box i's range as one item."""
         letters = self.pages[self.page][i]
+        language = getattr(self, "language", None)
+        if language:
+            offered = [range_name(r).upper() for r in self.pages[self.page]]
+            if not language.select(offered, i, self.page):
+                return
+            self.suggestions = ["", ""]
         self.items.append(letters)
         if RESET_WHEEL_AFTER_PICK:
             self.page = 0
@@ -160,7 +167,13 @@ class SpellerUI:
         self._changed("wheel -> " + " / ".join(range_name(r) for r in self.pages[self.page]))
 
     def space(self) -> None:
-        self.items.append(" ")
+        language = getattr(self, "language", None)
+        if language:
+            if not language.submit("boundary", {}):
+                return
+            self.suggestions = ["", ""]
+        else:
+            self.items.append(" ")
         if RESET_WHEEL_AFTER_PICK:
             self.page = 0
         self._flash("right")
@@ -172,11 +185,36 @@ class SpellerUI:
         word = self.suggestions[slot]
         if not word:
             return
-        start = len(self.items) - len(self.current_word())
-        self.items[start:] = [*word, " "]
+        language = getattr(self, "language", None)
+        if language:
+            if not language.submit("accept", {"word": word}):
+                return
+            self.suggestions = ["", ""]
+        else:
+            start = len(self.items) - len(self.current_word())
+            self.items[start:] = [*word, " "]
         self.page = 0
         self._flash("top" if slot == 0 else "bottom")
         self._changed(f"suggestion {word!r}")
+
+    def poll_language(self) -> None:
+        """Apply worker results between selections, never during EEG flicker."""
+        if not self.language:
+            return
+        reply = self.language.poll()
+        if reply is None:
+            return
+        if reply['state'] is None:
+            raise RuntimeError(reply['error'] + "; run python -m linguistic_model.prepare if weights are missing")
+        state = reply['state']
+        done = " ".join(state['confirmed_words'])
+        labels = {range_name(r).upper(): r for r in RANGES}
+        self.items = list(done + " " if done else "") + [labels[r] for r in state['current_ranges']]
+        words = [candidate['word'] for candidate in state['candidates'][:2]]
+        self.set_suggestions(*(words + [""] * (2 - len(words))))
+        if reply['error']:
+            print(f"[language] {reply['error']} (current word retained)")
+        print(f"[language] {self.text!r} | suggestions: {self.suggestions}")
 
     def set_suggestions(self, top: str = "", bottom: str = "") -> None:
         """Autocomplete hook: fill the top / bottom edges ("" = blank)."""
@@ -223,7 +261,7 @@ class SpellerUI:
         if phase != self._bar_phase:        # colour + label only change between phases
             self.bar_fill.fillColor = ACCENT if phase == "go" else FAINT
             _set_text(self.bar_label, {"go": "look", "ready": "SPACE to select",
-                                      "prepare": "get ready"}.get(phase, "next"))
+                                      "prepare": "get ready", "language": "thinking"}.get(phase, "next"))
             self._bar_phase = phase
         self.bar_track.draw()
         if fraction > 0:
@@ -358,6 +396,8 @@ def run_keys(win, ui: SpellerUI, squares) -> None:
     win.recordFrameIntervals = True
     try:
         while handle_keys(ui, boxes=True):
+            if getattr(ui, "language", None):
+                ui.poll_language()
             for sq in squares:
                 sq.draw()
             ui.draw()
@@ -410,6 +450,11 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
     try:
         while True:
             t = clock.getTime()
+            language = getattr(ui, "language", None)
+            if language and state != "flicker":
+                ui.poll_language()
+                if state == "language" and not language.pending:
+                    state = "ready" if manual else "mark"
             if manual:
                 # Consume SPACE in every state so presses during a selection
                 # cannot queue up another selection after feedback.
@@ -418,6 +463,8 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
                     t_prepare, state = t, "prepare"
                 elif state == "prepare" and t - t_prepare >= cfg.CUE_DURATION:
                     state = "mark"
+            if language and language.pending and state in ("mark", "ready", "prepare"):
+                state = "language"
             if state == "mark":
                 seen = recorder.prediction_count.value
                 actions_at_mark = ui.action_count
@@ -435,7 +482,7 @@ def run_flicker(win, ui: SpellerUI, squares, recorder, threshold: float = 0.0,
                 flicker_frame(squares, cfg.STIMULUS_FREQUENCIES, frame, win.ssvep_refresh)
             else:                    # feedback: squares dark, as in the rest period
                 fraction = 1 - (t - t_fb) / FEEDBACK_SECONDS if state == "feedback" else 1.0
-                phase = state if state in ("ready", "prepare") else "break"
+                phase = state if state in ("ready", "prepare", "language") else "break"
                 ui.set_progress(phase, fraction)
                 draw_blank(squares)
 
@@ -535,11 +582,19 @@ def main() -> None:
     parser.add_argument("--no-imu", action="store_true",
                         help="disable head gestures and use arrow keys only")
     parser.add_argument("--windowed", action="store_true", help="run in a window instead of fullscreen")
+    parser.add_argument("--engine", choices=["gpt2", "bigram", "off"], default="gpt2",
+                        help="local word suggestions (default: gpt2); off restores range-only UI")
+    parser.add_argument("--context", default="", help="optional conversation prompt for word suggestions")
+    parser.add_argument("--evidence-session", help="matching labeled CCA validation for range uncertainty (default: latest matching)")
     args = parser.parse_args()
     if cfg.N_TARGETS != 2:
         parser.error(f"the speller has 2 boxes; config.py has {cfg.N_TARGETS} targets")
 
     recorder = None
+    language = None
+    evidence = None
+    if len(args.context) > 500:
+        parser.error("--context must be at most 500 characters")
     if not args.keys:
         from .recording import RecordingProcess
         from .session import latest_session
@@ -571,6 +626,16 @@ def main() -> None:
                 sys.exit(f"--decoder trca was trained on channels {trained_on} but you asked for "
                          f"{channels}. TRCA has one weight per channel; they must match.")
         print(f"{args.decoder.upper()} | channels {channels} (from {source})")
+        if args.engine != "off":
+            from .language import RangeEvidence
+            if args.decoder != "cca" or args.threshold != cfg.CONFIDENCE_THRESHOLD:
+                parser.error("language evidence currently matches default-threshold CCA; use --engine off for other settings")
+            try:
+                evidence = (RangeEvidence.from_validation(args.evidence_session, channels)
+                            if args.evidence_session else RangeEvidence.latest(channels))
+            except (OSError, KeyError, ValueError) as exc:
+                parser.error(str(exc))
+            print(f"[language] provisional range reliability from {evidence.samples} accepted trials: {evidence.source}")
         live_dir = None
         if args.save:
             live_dir = os.path.join(cfg.TRAINING_DATA_DIR, time.strftime("live_%Y%m%d_%H%M%S"))
@@ -578,14 +643,19 @@ def main() -> None:
         recorder = RecordingProcess(port=args.port, predict_session=session, session_dir=live_dir,
                                     channels=channels, decoder=args.decoder,
                                     enable_gestures=not args.no_imu)
-        recorder.start()
 
     from psychopy import core
-    from .stimulus import build_stimuli, build_window, wait_for_board, wait_for_key
+    from .stimulus import build_stimuli, build_window, show_message, wait_for_board, wait_for_key
 
-    win = build_window(fullscreen=not args.windowed)
+    win = None
     ui = None
     try:
+        if args.engine != "off":
+            from .language import LanguageService
+            language = LanguageService(args.engine, args.context, evidence)
+        if recorder:
+            recorder.start()
+        win = build_window(fullscreen=not args.windowed)
         if recorder:
             if not wait_for_key(win, f"This screen FLASHES at {min(cfg.STIMULUS_FREQUENCIES):g}-"
                                      f"{max(cfg.STIMULUS_FREQUENCIES):g} Hz.\n\nDo not use it if you have "
@@ -595,7 +665,14 @@ def main() -> None:
                 return
 
         squares, cues, _ = build_stimuli(win)
-        ui = SpellerUI(win, cues)
+        ui = SpellerUI(win, cues, language)
+        if language:
+            from psychopy import event
+            while language.pending:
+                if event.getKeys(keyList=["escape"]):
+                    return
+                ui.poll_language()
+                show_message(win, "Loading local word suggestions...\n\nEscape quits.")
         how = ("1 / 2 = left / right box" if args.keys else
                "SPACE, then look at a box" if args.manual else "Look at a box")
         if not wait_for_key(win, f"Speller\n\n{how}: types its letters as one item.\n\n"
@@ -614,16 +691,29 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Stopped: Ctrl+C in the terminal.")
     finally:
-        if recorder:
+        if language:
+            language.close()
+        if recorder and recorder.pid is not None:
             if args.save:
                 recorder.request_save()
                 time.sleep(1.0)          # let the child write raw.npz before it is told to stop
             recorder.stop()
             recorder.join(timeout=10)
-        win.close()
+        if win:
+            win.close()
+        if recorder and args.save and os.path.isdir(live_dir):
+            with open(os.path.join(live_dir, "language.json"), "w") as f:
+                json.dump({"engine": args.engine, "context": args.context,
+                           "text": ui.text if ui else "",
+                           "evidence_session": evidence.source if evidence else None,
+                           "accepted_trials": evidence.samples if evidence else None,
+                           "posterior_matrix": evidence.matrix if evidence else None,
+                           "selection_priors": evidence.priors if evidence else None}, f, indent=2)
         if ui and ui.items:
             print(f"\nTyped: {ui.text!r}")
-        core.quit()
+        # PsychoPy quit raises SystemExit: do not hide model/startup exceptions.
+        if sys.exc_info()[0] is None:
+            core.quit()
 
 
 if __name__ == "__main__":

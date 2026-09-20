@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1017">
+  <title>Neuro North · Pipeline Simulator</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <h1>Pipeline simulator</h1>
+      <button class="quiet-button" id="reset" type="button">Reset session</button>
+    </header>
+
+    <section class="sentence-card" aria-labelledby="sentence-label">
+      <h2 id="sentence-label">Sentence</h2>
+      <form class="context-form" id="context-form">
+        <label for="context-prefix">Question or conversation context</label>
+        <div class="context-entry">
+          <input
+            id="context-prefix"
+            type="text"
+            maxlength="500"
+            placeholder="What would you like to eat?"
+            autocomplete="off"
+          >
+          <button class="quiet-button" type="submit">Apply context</button>
+        </div>
+      </form>
+      <div class="sentence" id="sentence"><span class="placeholder">No words decoded yet</span></div>
+      <div class="live-status" id="status" aria-live="polite">Connecting…</div>
+    </section>
+
+    <section class="workspace">
+      <div class="simulator-panel">
+        <div class="section-heading">
+          <h2>Choose a simulated SSVEP target</h2>
+          <span class="page-pill" id="page-pill">Page 1 / 2</span>
+        </div>
+
+        <div class="confidence-row">
+          <label for="confidence">Classifier evidence for clicked target</label>
+          <output id="confidence-output" for="confidence">82%</output>
+          <input id="confidence" type="range" min="1" max="99" value="82">
+          <div class="scale"><span>wrong / noisy</span><span>certain</span></div>
+        </div>
+
+        <div class="control-grid">
+          <button class="candidate-control candidate-top" id="candidate-top" type="button" disabled>
+            <span class="direction">Top prediction</span>
+            <strong>—</strong>
+          </button>
+
+          <button class="side-control page-control" id="page" type="button">
+            <span class="key">←</span>
+            <span>Cycle page</span>
+          </button>
+
+          <div class="targets" id="targets" aria-label="Simulated SSVEP targets"></div>
+
+          <button class="side-control space-control" id="space" type="button">
+            <span class="key">→</span>
+            <span>Word boundary</span>
+          </button>
+
+          <button class="candidate-control candidate-bottom" id="candidate-bottom" type="button" disabled>
+            <span class="direction">Bottom prediction</span>
+            <strong>—</strong>
+          </button>
+        </div>
+
+        <div class="utility-row">
+          <button class="utility" id="backspace" type="button">Undo last input</button>
+          <button class="utility" id="clear" type="button">Clear current word</button>
+          <button class="utility" id="finish" type="button" disabled>Finish sentence</button>
+          <span class="shortcut-note">Keys: 1 / 2 targets · ← page · → boundary · Backspace undo</span>
+        </div>
+      </div>
+
+      <aside class="decoder-panel">
+        <div class="section-heading compact">
+          <h2>Candidate posterior</h2>
+          <span class="count" id="candidate-count">0 candidates</span>
+        </div>
+        <div class="engine-control">
+          <label for="completion-engine">Completion engine</label>
+          <select id="completion-engine" disabled aria-label="Completion engine"></select>
+        </div>
+        <div class="engine-control">
+          <label for="decode-mode">Search / decode</label>
+          <select id="decode-mode" disabled aria-label="Search and decode type"></select>
+        </div>
+
+
+        <div class="metrics" id="metrics">
+          <div><span>Top confidence</span><strong>0%</strong></div>
+          <div><span>Top-two margin</span><strong>0%</strong></div>
+          <div><span>Ambiguity</span><strong>0%</strong></div>
+        </div>
+
+        <ol class="candidate-list" id="candidate-list"></ol>
+      </aside>
+    </section>
+
+    <section class="trace-card">
+      <div class="section-heading compact">
+        <h2>Soft evidence trace</h2>
+        <span class="count" id="position-count">0 positions</span>
+      </div>
+      <div class="trace" id="trace"><span class="placeholder">Click a target to add the first observation.</span></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="alert" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
