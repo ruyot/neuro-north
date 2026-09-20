@@ -68,6 +68,8 @@ class _Live:
         handle taken at connect time would go on reading a tab the user is no
         longer looking at, which reads as the browser ignoring every command.
         """
+        # ponytail: newest tab wins. A site that opens a background popup would
+        # drag the agent onto it; track the tab a click produced if that shows up.
         open_tabs = [tab for tab in self.context.pages if not tab.is_closed()]
         tab = open_tabs[-1] if open_tabs else self.context.new_page()
         if tab is not self._current:
